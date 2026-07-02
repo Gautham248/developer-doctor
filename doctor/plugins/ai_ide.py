@@ -1,21 +1,13 @@
-import time
 from datetime import datetime, timezone
 
-import psutil
-
+from doctor.capabilities import Capability
 from doctor.models import Finding, PluginResult, Status
 from doctor.plugins.base import DoctorPlugin
+from doctor.services.process_service import ProcessService
 from doctor.utils.state import load_state, save_state
 
 STATE_KEY = "ai_ide"
 
-# Best-effort, case-insensitive substring match against psutil's process name.
-#
-# Electron IDEs (Antigravity, VS Code, Cursor) spawn clearly-named helper
-# processes, which is what makes reliable detection possible. CLI-based
-# agents (Claude Code, Gemini CLI) are matched on much weaker substrings
-# ("claude", "gemini") that could collide with unrelated processes — a
-# known limitation, not a confident match, flagged here rather than hidden.
 IDE_PROCESS_PATTERNS: dict[str, list[str]] = {
     "Antigravity": ["antigravity"],
     "VS Code": ["code helper", "visual studio code"],
@@ -23,8 +15,6 @@ IDE_PROCESS_PATTERNS: dict[str, list[str]] = {
     "Claude Code": ["claude"],
     "Gemini CLI": ["gemini"],
 }
-
-SAMPLE_INTERVAL_SECONDS = 0.5
 
 SUSTAINED_CPU_PERCENT_THRESHOLD = 50.0
 SUSTAINED_DURATION_WARN_MINUTES = 15.0
@@ -44,10 +34,12 @@ class AIIDEPlugin(DoctorPlugin):
         "Cursor, Claude Code, Gemini CLI) and flags sustained high CPU or "
         "excessive RAM usage."
     )
+    capabilities = [Capability.PROCESS_INSPECTION]
 
     def run(self) -> PluginResult:
         try:
-            families = self._sample_ide_families()
+            process_service = self.use_service(ProcessService)
+            families = process_service.sample_grouped(self._match_ide_family)
 
             if not families:
                 return PluginResult(
@@ -91,10 +83,6 @@ class AIIDEPlugin(DoctorPlugin):
                         f"{family_name} is using a notable amount of RAM ({ram_gb:.1f} GB)."
                     )
 
-                # Only families currently over the CPU threshold get carried
-                # into new_state — anything not elevated this run simply
-                # isn't written back, which resets its "first seen" clock
-                # for the next time it spikes.
                 if cpu_percent >= SUSTAINED_CPU_PERCENT_THRESHOLD:
                     first_seen_str = state.get(family_name)
                     try:
@@ -150,52 +138,9 @@ class AIIDEPlugin(DoctorPlugin):
             )
 
     def _match_ide_family(self, process_name: str) -> str | None:
-        """Return the IDE family a process belongs to, or None if unmatched."""
         lowered = process_name.lower()
         for family, patterns in IDE_PROCESS_PATTERNS.items():
             for pattern in patterns:
                 if pattern in lowered:
                     return family
         return None
-
-    def _sample_ide_families(self) -> dict[str, dict[str, float]]:
-        """Aggregate CPU%/RAM/process-count per matched IDE family.
-
-        Uses the same prime-then-sample technique as CPUPlugin, since
-        psutil returns a misleading 0.0% on the first per-process
-        cpu_percent() call.
-        """
-        matched_procs = []
-        for proc in psutil.process_iter(["name"]):
-            try:
-                name = proc.info["name"]
-                if name and self._match_ide_family(name):
-                    proc.cpu_percent(interval=None)  # prime
-                    matched_procs.append(proc)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-
-        if not matched_procs:
-            return {}
-
-        time.sleep(SAMPLE_INTERVAL_SECONDS)
-
-        families: dict[str, dict[str, float]] = {}
-        for proc in matched_procs:
-            try:
-                name = proc.name()
-                family = self._match_ide_family(name)
-                if not family:
-                    continue
-                cpu = proc.cpu_percent(interval=None)
-                ram_gb = proc.memory_info().rss / (1024**3)
-
-                if family not in families:
-                    families[family] = {"cpu_percent": 0.0, "ram_gb": 0.0, "process_count": 0.0}
-                families[family]["cpu_percent"] += cpu
-                families[family]["ram_gb"] += ram_gb
-                families[family]["process_count"] += 1
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-
-        return families

@@ -2,6 +2,7 @@ import psutil
 
 from doctor.models import Finding, PluginResult, Status
 from doctor.plugins.base import DoctorPlugin
+from doctor.capabilities import Capability
 
 # Defaults — overridable per-project via doctor.toml:
 # [thresholds.memory]
@@ -23,7 +24,7 @@ FAIL_SCORE_DELTA = 15
 class MemoryPlugin(DoctorPlugin):
     name = "memory"
     description = "Reports RAM and swap usage, flags memory pressure."
-
+    capabilities : list[Capability] = []
     def __init__(self, thresholds: dict[str, float] | None = None) -> None:
         self.thresholds = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
 

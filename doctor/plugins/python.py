@@ -4,11 +4,12 @@ from pathlib import Path
 
 from doctor.models import Finding, PluginResult, Status
 from doctor.plugins.base import DoctorPlugin
-
+from doctor.capabilities import Capability
 
 class PythonPlugin(DoctorPlugin):
     name = "python"
     description = "Detects active Python version, virtualenv state, and version manager (mise/pyenv/system)."
+    capabilities = [Capability.FILESYSTEM_READ]
 
     def is_supported(self) -> bool:
         return shutil.which("python3") is not None or shutil.which("python") is not None

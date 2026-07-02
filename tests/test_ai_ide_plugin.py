@@ -4,6 +4,8 @@ from unittest.mock import patch
 from doctor.models import Status
 from doctor.plugins.ai_ide import AIIDEPlugin
 
+PATCH_TARGET = "doctor.services.process_service.ProcessService.sample_grouped"
+
 
 def test_match_ide_family_antigravity():
     plugin = AIIDEPlugin()
@@ -22,7 +24,7 @@ def test_match_ide_family_unmatched():
 
 def test_ai_ide_plugin_passes_with_no_processes():
     plugin = AIIDEPlugin()
-    with patch.object(plugin, "_sample_ide_families", return_value={}):
+    with patch(PATCH_TARGET, return_value={}):
         result = plugin.run()
 
     assert result.status == Status.PASS
@@ -33,7 +35,7 @@ def test_ai_ide_plugin_passes_under_normal_usage():
     plugin = AIIDEPlugin()
     families = {"VS Code": {"cpu_percent": 10.0, "ram_gb": 1.0, "process_count": 3.0}}
     with (
-        patch.object(plugin, "_sample_ide_families", return_value=families),
+        patch(PATCH_TARGET, return_value=families),
         patch("doctor.plugins.ai_ide.load_state", return_value={}),
         patch("doctor.plugins.ai_ide.save_state"),
     ):
@@ -47,7 +49,7 @@ def test_ai_ide_plugin_fails_on_excessive_ram():
     plugin = AIIDEPlugin()
     families = {"Cursor": {"cpu_percent": 5.0, "ram_gb": 10.0, "process_count": 4.0}}
     with (
-        patch.object(plugin, "_sample_ide_families", return_value=families),
+        patch(PATCH_TARGET, return_value=families),
         patch("doctor.plugins.ai_ide.load_state", return_value={}),
         patch("doctor.plugins.ai_ide.save_state"),
     ):
@@ -58,11 +60,10 @@ def test_ai_ide_plugin_fails_on_excessive_ram():
 
 
 def test_ai_ide_plugin_warns_on_newly_elevated_cpu():
-    """First time seeing high CPU: tracked, but not yet long enough to warn/fail."""
     plugin = AIIDEPlugin()
     families = {"Antigravity": {"cpu_percent": 90.0, "ram_gb": 1.0, "process_count": 2.0}}
     with (
-        patch.object(plugin, "_sample_ide_families", return_value=families),
+        patch(PATCH_TARGET, return_value=families),
         patch("doctor.plugins.ai_ide.load_state", return_value={}),
         patch("doctor.plugins.ai_ide.save_state") as mock_save,
     ):
@@ -79,7 +80,7 @@ def test_ai_ide_plugin_warns_after_sustained_cpu():
     families = {"Antigravity": {"cpu_percent": 90.0, "ram_gb": 1.0, "process_count": 2.0}}
     first_seen = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
     with (
-        patch.object(plugin, "_sample_ide_families", return_value=families),
+        patch(PATCH_TARGET, return_value=families),
         patch("doctor.plugins.ai_ide.load_state", return_value={"Antigravity": first_seen}),
         patch("doctor.plugins.ai_ide.save_state"),
     ):
@@ -94,7 +95,7 @@ def test_ai_ide_plugin_fails_after_very_sustained_cpu():
     families = {"Antigravity": {"cpu_percent": 95.0, "ram_gb": 1.0, "process_count": 2.0}}
     first_seen = (datetime.now(timezone.utc) - timedelta(minutes=45)).isoformat()
     with (
-        patch.object(plugin, "_sample_ide_families", return_value=families),
+        patch(PATCH_TARGET, return_value=families),
         patch("doctor.plugins.ai_ide.load_state", return_value={"Antigravity": first_seen}),
         patch("doctor.plugins.ai_ide.save_state"),
     ):
@@ -109,7 +110,7 @@ def test_ai_ide_plugin_clears_state_when_no_longer_elevated():
     families = {"Antigravity": {"cpu_percent": 5.0, "ram_gb": 0.5, "process_count": 2.0}}
     old_first_seen = (datetime.now(timezone.utc) - timedelta(minutes=60)).isoformat()
     with (
-        patch.object(plugin, "_sample_ide_families", return_value=families),
+        patch(PATCH_TARGET, return_value=families),
         patch("doctor.plugins.ai_ide.load_state", return_value={"Antigravity": old_first_seen}),
         patch("doctor.plugins.ai_ide.save_state") as mock_save,
     ):
@@ -122,7 +123,7 @@ def test_ai_ide_plugin_clears_state_when_no_longer_elevated():
 
 def test_ai_ide_plugin_never_raises_on_unexpected_failure():
     plugin = AIIDEPlugin()
-    with patch.object(plugin, "_sample_ide_families", side_effect=RuntimeError("boom")):
+    with patch(PATCH_TARGET, side_effect=RuntimeError("boom")):
         result = plugin.run()
 
     assert result.status == Status.FAIL

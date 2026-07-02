@@ -5,11 +5,13 @@ import psutil
 
 from doctor.models import Finding, PluginResult, Status
 from doctor.plugins.base import DoctorPlugin
+from doctor.capabilities import Capability
 
 
 class SystemPlugin(DoctorPlugin):
     name = "system"
     description = "Reports basic system information: OS, architecture, RAM, uptime."
+    capabilities: list[Capability] = []
 
     def run(self) -> PluginResult:
         try:

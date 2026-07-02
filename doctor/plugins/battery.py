@@ -6,7 +6,7 @@ import psutil
 
 from doctor.models import Finding, PluginResult, Status
 from doctor.plugins.base import DoctorPlugin
-
+from doctor.capabilities import Capability
 # Defaults — overridable per-project via doctor.toml:
 # [thresholds.battery]
 # warn_health_percent = 75
@@ -27,6 +27,7 @@ FAIL_SCORE_DELTA = 15
 class BatteryPlugin(DoctorPlugin):
     name = "battery"
     description = "Reports battery health, cycle count, and charging state."
+    capabilities = [Capability.BATTERY_INFORMATION, Capability.SHELL_COMMANDS]
 
     def __init__(self, thresholds: dict[str, float] | None = None) -> None:
         self.thresholds = {**DEFAULT_THRESHOLDS, **(thresholds or {})}

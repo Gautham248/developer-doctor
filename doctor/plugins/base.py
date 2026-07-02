@@ -1,6 +1,11 @@
 from abc import ABC, abstractmethod
+from typing import TypeVar
 
+from doctor.capabilities import Capability, CapabilityError
 from doctor.models import PluginResult
+from doctor.services.base import BaseService
+
+ServiceT = TypeVar("ServiceT", bound=BaseService)
 
 
 class DoctorPlugin(ABC):
@@ -13,6 +18,7 @@ class DoctorPlugin(ABC):
 
     name: str
     description: str
+    capabilities: list[Capability] = []
 
     def is_supported(self) -> bool:
         """Return False to skip this plugin on the current platform.
@@ -31,3 +37,21 @@ class DoctorPlugin(ABC):
         misbehaving plugin must never crash the doctor process.
         """
         ...
+
+    def use_service(self, service_class: type[ServiceT]) -> ServiceT:
+        """Return an instance of a shared service (§12), enforcing that
+        this plugin declared the capability (§11) that service requires.
+
+        Raises CapabilityError if the capability wasn't declared — an
+        undeclared capability is treated as a bug in the plugin, not
+        something to silently allow.
+        """
+        required = service_class.required_capability
+        if required not in self.capabilities:
+            raise CapabilityError(
+                f"{type(self).__name__} attempted to use "
+                f"{service_class.__name__}, which requires capability "
+                f"'{required.value}', but did not declare it in "
+                f"`capabilities`."
+            )
+        return service_class()

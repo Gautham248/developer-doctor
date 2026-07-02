@@ -1,9 +1,7 @@
-import time
-
-import psutil
-
+from doctor.capabilities import Capability
 from doctor.models import Finding, PluginResult, Status
 from doctor.plugins.base import DoctorPlugin
+from doctor.services.process_service import ProcessService
 
 # Defaults — overridable per-project via doctor.toml:
 # [thresholds.cpu]
@@ -19,19 +17,21 @@ DEFAULT_THRESHOLDS = {
 WARN_SCORE_DELTA = 5
 FAIL_SCORE_DELTA = 15
 
-SAMPLE_INTERVAL_SECONDS = 0.5
-
 
 class CPUPlugin(DoctorPlugin):
     name = "cpu"
     description = "Reports CPU usage and flags runaway processes."
+    capabilities = [Capability.PROCESS_INSPECTION]
 
     def __init__(self, thresholds: dict[str, float] | None = None) -> None:
         self.thresholds = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
 
     def run(self) -> PluginResult:
         try:
-            top_processes, cpu_percent, load_avg = self._sample()
+            process_service = self.use_service(ProcessService)
+            top_processes, cpu_percent, load_avg = process_service.sample_system_and_processes(
+                limit=3
+            )
 
             findings = [Finding(summary=f"CPU usage: {cpu_percent:.0f}%")]
             recommendations: list[str] = []
@@ -81,40 +81,3 @@ class CPUPlugin(DoctorPlugin):
                 status=Status.FAIL,
                 findings=[Finding(summary="Could not read CPU information", detail=str(e))],
             )
-
-    def _sample(self) -> tuple[list[tuple[str, float]], float, tuple[float, float, float]]:
-        """Prime and sample CPU usage for both the system and individual processes.
-
-        psutil's cpu_percent() returns 0.0 (or garbage) on the very first
-        call for any given process/handle, since it needs a baseline to
-        diff against. We prime everything with a non-blocking call first,
-        sleep once, then take the real reading — one shared sample window
-        for both the system-wide and per-process numbers, so we only pay
-        the latency cost once.
-        """
-        psutil.cpu_percent(interval=None)
-        procs = []
-        for proc in psutil.process_iter(["name"]):
-            try:
-                proc.cpu_percent(interval=None)
-                procs.append(proc)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-
-        time.sleep(SAMPLE_INTERVAL_SECONDS)
-
-        cpu_percent = psutil.cpu_percent(interval=None)
-        load_avg = psutil.getloadavg()
-
-        results = []
-        for proc in procs:
-            try:
-                cpu = proc.cpu_percent(interval=None)
-                name = proc.name()
-                if cpu and cpu > 1.0 and name:
-                    results.append((name, cpu))
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-
-        results.sort(key=lambda p: p[1], reverse=True)
-        return results[:3], cpu_percent, load_avg

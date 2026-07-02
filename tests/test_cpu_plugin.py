@@ -3,12 +3,12 @@ from unittest.mock import patch
 from doctor.models import Status
 from doctor.plugins.cpu import CPUPlugin
 
+PATCH_TARGET = "doctor.services.process_service.ProcessService.sample_system_and_processes"
+
 
 def test_cpu_plugin_passes_under_normal_load():
     plugin = CPUPlugin()
-    with patch.object(
-        plugin, "_sample", return_value=([], 10.0, (1.0, 1.0, 1.0))
-    ):
+    with patch(PATCH_TARGET, return_value=([], 10.0, (1.0, 1.0, 1.0))):
         result = plugin.run()
 
     assert result.status == Status.PASS
@@ -17,9 +17,7 @@ def test_cpu_plugin_passes_under_normal_load():
 
 def test_cpu_plugin_warns_on_high_usage():
     plugin = CPUPlugin()
-    with patch.object(
-        plugin, "_sample", return_value=([], 75.0, (2.0, 2.0, 2.0))
-    ):
+    with patch(PATCH_TARGET, return_value=([], 75.0, (2.0, 2.0, 2.0))):
         result = plugin.run()
 
     assert result.status == Status.WARN
@@ -28,9 +26,7 @@ def test_cpu_plugin_warns_on_high_usage():
 
 def test_cpu_plugin_fails_on_critical_usage():
     plugin = CPUPlugin()
-    with patch.object(
-        plugin, "_sample", return_value=([], 95.0, (4.0, 4.0, 4.0))
-    ):
+    with patch(PATCH_TARGET, return_value=([], 95.0, (4.0, 4.0, 4.0))):
         result = plugin.run()
 
     assert result.status == Status.FAIL
@@ -39,9 +35,8 @@ def test_cpu_plugin_fails_on_critical_usage():
 
 def test_cpu_plugin_flags_runaway_process():
     plugin = CPUPlugin()
-    with patch.object(
-        plugin,
-        "_sample",
+    with patch(
+        PATCH_TARGET,
         return_value=([("Antigravity IDE Helper", 85.0)], 30.0, (1.0, 1.0, 1.0)),
     ):
         result = plugin.run()
@@ -51,9 +46,9 @@ def test_cpu_plugin_flags_runaway_process():
     assert "Antigravity IDE Helper" in result.recommendations[0]
 
 
-def test_cpu_plugin_never_raises_on_psutil_failure():
+def test_cpu_plugin_never_raises_on_unexpected_failure():
     plugin = CPUPlugin()
-    with patch.object(plugin, "_sample", side_effect=RuntimeError("boom")):
+    with patch(PATCH_TARGET, side_effect=RuntimeError("boom")):
         result = plugin.run()
 
     assert result.status == Status.FAIL

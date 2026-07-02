@@ -4,6 +4,7 @@ import subprocess
 
 from doctor.models import Finding, PluginResult, Status
 from doctor.plugins.base import DoctorPlugin
+from doctor.capabilities import Capability
 
 # Defaults — overridable per-project via doctor.toml:
 # [thresholds.docker]
@@ -23,7 +24,8 @@ DOCKER_TIMEOUT_SECONDS = 5
 class DockerPlugin(DoctorPlugin):
     name = "docker"
     description = "Checks whether Docker is installed, running, and reports container count/resource usage."
-
+    capabilities = [Capability.DOCKER_DAEMON_ACCESS, Capability.SHELL_COMMANDS]
+    
     def __init__(self, thresholds: dict[str, float] | None = None) -> None:
         self.thresholds = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
 

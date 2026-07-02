@@ -7,6 +7,7 @@ from git import GitCommandError, InvalidGitRepositoryError, Repo
 
 from doctor.models import Finding, PluginResult, Status
 from doctor.plugins.base import DoctorPlugin
+from doctor.capabilities import Capability
 
 FAIL_SCORE_DELTA = 15
 WARN_SCORE_DELTA = 5
@@ -16,7 +17,12 @@ REMOTE_CHECK_TIMEOUT_SECONDS = 5
 class GitPlugin(DoctorPlugin):
     name = "git"
     description = "Checks Git identity, per-repo config, and remote reachability."
-
+    capabilities = [
+        Capability.GIT_REPOSITORY_ACCESS,
+        Capability.FILESYSTEM_READ,
+        Capability.SHELL_COMMANDS,
+        Capability.NETWORK_SOCKETS,
+    ]
     def is_supported(self) -> bool:
         try:
             git.Git().version()

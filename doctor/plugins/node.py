@@ -4,6 +4,7 @@ from pathlib import Path
 
 from doctor.models import Finding, PluginResult, Status
 from doctor.plugins.base import DoctorPlugin
+from doctor.capabilities import Capability
 
 NODE_TIMEOUT_SECONDS = 5
 
@@ -11,6 +12,7 @@ NODE_TIMEOUT_SECONDS = 5
 class NodePlugin(DoctorPlugin):
     name = "node"
     description = "Detects Node.js version, active package manager, and version manager (mise/nvm/system)."
+    capabilities = [Capability.SHELL_COMMANDS, Capability.FILESYSTEM_READ]
 
     def is_supported(self) -> bool:
         return shutil.which("node") is not None

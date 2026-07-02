@@ -2,6 +2,7 @@ import psutil
 
 from doctor.models import Finding, PluginResult, Status
 from doctor.plugins.base import DoctorPlugin
+from doctor.capabilities import Capability
 
 # Defaults — overridable per-project via doctor.toml:
 # [thresholds.disk]
@@ -19,7 +20,7 @@ FAIL_SCORE_DELTA = 15
 class DiskPlugin(DoctorPlugin):
     name = "disk"
     description = "Reports disk capacity for the primary volume."
-
+    capabilities: list[Capability] = []
     def __init__(self, thresholds: dict[str, float] | None = None) -> None:
         self.thresholds = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
 
