@@ -1,0 +1,36 @@
+[project]
+name = "developer-doctor"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Gautham Krishna N", email = "gkn240801@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "gitpython>=3.1.50",
+    "platformdirs>=4.10.0",
+    "psutil>=7.2.2",
+    "pydantic>=2.13.4",
+    "rich>=15.0.0",
+    "typer>=0.26.8",
+]
+
+[project.scripts]
+doctor = "doctor.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.11.26,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "doctor"
+module-root = ""
+
+[dependency-groups]
+dev = [
+    "mypy>=2.1.0",
+    "pytest>=9.1.1",
+    "ruff>=0.15.20",
+    "types-psutil>=7.2.2.20260518",
+]
