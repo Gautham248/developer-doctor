@@ -1,12 +1,26 @@
 [project]
 name = "developer-doctor"
 version = "0.1.0"
-description = "Add your description here"
+description = "A plugin-driven CLI that diagnoses developer workstations and produces a concise, actionable health report."
 readme = "README.md"
+license = "MIT"
 authors = [
     { name = "Gautham Krishna N", email = "gkn240801@gmail.com" }
 ]
 requires-python = ">=3.13"
+keywords = ["cli", "diagnostics", "developer-tools", "devops", "health-check"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: System :: Monitoring",
+    "Topic :: Utilities",
+]
 dependencies = [
     "gitpython>=3.1.50",
     "platformdirs>=4.10.0",
@@ -20,7 +34,13 @@ dependencies = [
 [project.scripts]
 doctor = "doctor.cli:app"
 
+[project.urls]
+Homepage = "https://github.com/Gautham248/developer-doctor"
+Repository = "https://github.com/Gautham248/developer-doctor"
+Issues = "https://github.com/Gautham248/developer-doctor/issues"
+
 [build-system]
+
 requires = ["uv_build>=0.11.26,<0.12.0"]
 build-backend = "uv_build"
 
