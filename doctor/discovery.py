@@ -91,3 +91,16 @@ def _extract_plugin_instances(module: ModuleType) -> list[DoctorPlugin]:
         if issubclass(obj, DoctorPlugin) and obj is not DoctorPlugin:
             instances.append(obj())
     return instances
+
+def load_plugins_from_file(file_path: Path) -> tuple[list[DoctorPlugin], list[str]]:
+    """Load and instantiate all DoctorPlugin subclasses defined in a
+    single .py file — used by `doctor plugin validate` (§22.5) to let
+    plugin authors sanity-check a plugin before publishing, using the
+    exact same loading mechanism discover_user_plugins() uses at
+    runtime, so a pass here means the plugin will actually load for
+    real users too."""
+    try:
+        module = _load_module_from_path(file_path)
+        return _extract_plugin_instances(module), []
+    except Exception as e:
+        return [], [f"Failed to load '{file_path.name}': {e}"]

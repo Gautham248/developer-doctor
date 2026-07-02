@@ -4,8 +4,8 @@ from rich.panel import Panel
 from rich.text import Text
 
 from doctor.models import PluginResult, Status
-from datetime import datetime
 from doctor.baseline import PluginDiff
+from doctor.trend import MetricTrend
 
 STATUS_STYLE: dict[Status, tuple[str, str]] = {
     Status.PASS: ("green", "✓"),
@@ -14,24 +14,25 @@ STATUS_STYLE: dict[Status, tuple[str, str]] = {
     Status.INFO: ("cyan", "ℹ"),
 }
 
-def render_baseline_diff(
+def render_diff(
+    title: str,
     diffs: list[PluginDiff],
-    baseline_score: int,
-    current_score: int,
-    baseline_generated_at: datetime,
+    before_score: int,
+    after_score: int,
     console: Console,
 ) -> None:
-    """Render a baseline comparison (§16) to the terminal."""
+    """Render a diff between two reports — shared by baseline compare
+    (§16) and snapshot diff (§17); both ultimately compare two Reports,
+    they just differ in how the "before" report was chosen."""
     console.print()
-    console.print(Text("Baseline Comparison", style="bold"))
-    console.print(Text(f"Baseline captured: {baseline_generated_at.isoformat()}", style="dim"))
+    console.print(Text(title, style="bold"))
     console.print()
 
-    score_diff = current_score - baseline_score
+    score_diff = after_score - before_score
     score_color = "green" if score_diff >= 0 else "red"
     sign = "+" if score_diff >= 0 else ""
     console.print(
-        f"Health Score: {baseline_score} → {current_score} "
+        f"Health Score: {before_score} → {after_score} "
         f"([{score_color}]{sign}{score_diff}[/{score_color}])"
     )
     console.print()
@@ -40,7 +41,7 @@ def render_baseline_diff(
     unchanged = [d for d in diffs if not d.has_changes]
 
     if not changed:
-        console.print("[green]No changes detected since baseline.[/green]")
+        console.print("[green]No changes detected.[/green]")
         return
 
     for diff in changed:
@@ -51,6 +52,38 @@ def render_baseline_diff(
         names = ", ".join(d.plugin_name for d in unchanged)
         console.print(f"[dim]Unchanged: {names}[/dim]")
 
+
+def render_trends(trends: list[MetricTrend], num_snapshots: int, console: Console) -> None:
+    """Render trend analysis (§17) to the terminal."""
+    console.print()
+    console.print(Text("Trend Analysis", style="bold"))
+    console.print(Text(f"Computed across {num_snapshots} snapshots", style="dim"))
+    console.print()
+
+    if not trends:
+        console.print(
+            "[dim]No significant trends detected — need enough snapshots per "
+            "metric and a meaningful change to report.[/dim]"
+        )
+        return
+
+    for trend in trends:
+        console.print(_render_trend_line(trend))
+
+
+def _render_trend_line(trend: MetricTrend) -> Text:
+    color = "red" if trend.direction == "up" else "green" if trend.direction == "down" else "white"
+    arrow = "↑" if trend.direction == "up" else "↓" if trend.direction == "down" else "→"
+    pct = trend.percent_change
+    span_days = max(1, (trend.last_seen - trend.first_seen).days)
+
+    pct_str = f"{pct:+.0f}%" if pct is not None else f"{trend.last_value - trend.first_value:+.2f}"
+    text = Text()
+    text.append(f"{arrow} ", style=color)
+    text.append(f"{trend.plugin_name}.{trend.metric_key}: ", style="bold")
+    text.append(f"{trend.first_value:.1f} → {trend.last_value:.1f} ", style=color)
+    text.append(f"({pct_str} over {span_days}d, {trend.num_points} snapshots)", style="dim")
+    return text
 
 def _render_diff_panel(diff: PluginDiff) -> Panel:
     lines: list[Text] = []
