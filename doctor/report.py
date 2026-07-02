@@ -4,6 +4,8 @@ from rich.panel import Panel
 from rich.text import Text
 
 from doctor.models import PluginResult, Status
+from datetime import datetime
+from doctor.baseline import PluginDiff
 
 STATUS_STYLE: dict[Status, tuple[str, str]] = {
     Status.PASS: ("green", "✓"),
@@ -12,6 +14,61 @@ STATUS_STYLE: dict[Status, tuple[str, str]] = {
     Status.INFO: ("cyan", "ℹ"),
 }
 
+def render_baseline_diff(
+    diffs: list[PluginDiff],
+    baseline_score: int,
+    current_score: int,
+    baseline_generated_at: datetime,
+    console: Console,
+) -> None:
+    """Render a baseline comparison (§16) to the terminal."""
+    console.print()
+    console.print(Text("Baseline Comparison", style="bold"))
+    console.print(Text(f"Baseline captured: {baseline_generated_at.isoformat()}", style="dim"))
+    console.print()
+
+    score_diff = current_score - baseline_score
+    score_color = "green" if score_diff >= 0 else "red"
+    sign = "+" if score_diff >= 0 else ""
+    console.print(
+        f"Health Score: {baseline_score} → {current_score} "
+        f"([{score_color}]{sign}{score_diff}[/{score_color}])"
+    )
+    console.print()
+
+    changed = [d for d in diffs if d.has_changes]
+    unchanged = [d for d in diffs if not d.has_changes]
+
+    if not changed:
+        console.print("[green]No changes detected since baseline.[/green]")
+        return
+
+    for diff in changed:
+        console.print(_render_diff_panel(diff))
+        console.print()
+
+    if unchanged:
+        names = ", ".join(d.plugin_name for d in unchanged)
+        console.print(f"[dim]Unchanged: {names}[/dim]")
+
+
+def _render_diff_panel(diff: PluginDiff) -> Panel:
+    lines: list[Text] = []
+    if diff.status_changed:
+        lines.append(
+            Text(f"Status: {diff.baseline_status or '—'} → {diff.current_status or '—'}")
+        )
+    for key, (old, new) in diff.changed_metadata.items():
+        lines.append(Text(f"{key}: {old} → {new}"))
+
+    body = Group(*lines) if lines else Text("(no details)", style="dim")
+    color = "yellow" if diff.status_changed else "cyan"
+    return Panel(
+        body,
+        title=f"[bold {color}]{diff.plugin_name}[/bold {color}]",
+        title_align="left",
+        border_style=color,
+    )
 
 def render_report(results: list[PluginResult], score: int, console: Console) -> None:
     """Render a full diagnostic report to the terminal.
