@@ -2,6 +2,7 @@ from unittest.mock import MagicMock, patch
 
 from doctor.models import Status
 from doctor.plugins.battery import BatteryPlugin
+from doctor.services.battery_service import BatteryService
 
 
 def _mock_battery(percent: float, plugged: bool) -> MagicMock:
@@ -13,15 +14,15 @@ def _mock_battery(percent: float, plugged: bool) -> MagicMock:
 
 def test_battery_plugin_not_supported_without_battery():
     plugin = BatteryPlugin()
-    with patch("psutil.sensors_battery", return_value=None):
+    with patch.object(BatteryService, "get_battery_status", return_value=None):
         assert plugin.is_supported() is False
 
 
 def test_battery_plugin_passes_on_healthy_battery():
     plugin = BatteryPlugin()
     with (
-        patch("psutil.sensors_battery", return_value=_mock_battery(80.0, True)),
-        patch.object(plugin, "_read_macos_health", return_value=(200, 95.0)),
+        patch.object(BatteryService, "get_battery_status", return_value=_mock_battery(80.0, True)),
+        patch.object(BatteryService, "get_macos_health", return_value=(200, 95.0)),
     ):
         result = plugin.run()
 
@@ -32,8 +33,8 @@ def test_battery_plugin_passes_on_healthy_battery():
 def test_battery_plugin_warns_on_degraded_health():
     plugin = BatteryPlugin()
     with (
-        patch("psutil.sensors_battery", return_value=_mock_battery(60.0, False)),
-        patch.object(plugin, "_read_macos_health", return_value=(850, 78.0)),
+        patch.object(BatteryService, "get_battery_status", return_value=_mock_battery(60.0, False)),
+        patch.object(BatteryService, "get_macos_health", return_value=(850, 78.0)),
     ):
         result = plugin.run()
 
@@ -44,8 +45,8 @@ def test_battery_plugin_warns_on_degraded_health():
 def test_battery_plugin_fails_on_critical_health():
     plugin = BatteryPlugin()
     with (
-        patch("psutil.sensors_battery", return_value=_mock_battery(45.0, False)),
-        patch.object(plugin, "_read_macos_health", return_value=(1200, 55.0)),
+        patch.object(BatteryService, "get_battery_status", return_value=_mock_battery(45.0, False)),
+        patch.object(BatteryService, "get_macos_health", return_value=(1200, 55.0)),
     ):
         result = plugin.run()
 
@@ -54,11 +55,10 @@ def test_battery_plugin_fails_on_critical_health():
 
 
 def test_battery_plugin_works_without_health_data():
-    """Non-macOS or parse-failure case: charge/plugged still reported, no crash."""
     plugin = BatteryPlugin()
     with (
-        patch("psutil.sensors_battery", return_value=_mock_battery(70.0, True)),
-        patch.object(plugin, "_read_macos_health", return_value=None),
+        patch.object(BatteryService, "get_battery_status", return_value=_mock_battery(70.0, True)),
+        patch.object(BatteryService, "get_macos_health", return_value=None),
     ):
         result = plugin.run()
 
@@ -68,7 +68,7 @@ def test_battery_plugin_works_without_health_data():
 
 def test_battery_plugin_never_raises_on_psutil_failure():
     plugin = BatteryPlugin()
-    with patch("psutil.sensors_battery", side_effect=RuntimeError("boom")):
+    with patch.object(BatteryService, "get_battery_status", side_effect=RuntimeError("boom")):
         result = plugin.run()
 
     assert result.status == Status.FAIL

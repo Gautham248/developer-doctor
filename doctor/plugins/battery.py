@@ -1,12 +1,8 @@
-import platform
-import re
-import subprocess
-
-import psutil
-
+from doctor.capabilities import Capability
 from doctor.models import Finding, PluginResult, Status
 from doctor.plugins.base import DoctorPlugin
-from doctor.capabilities import Capability
+from doctor.services.battery_service import BatteryService
+
 # Defaults — overridable per-project via doctor.toml:
 # [thresholds.battery]
 # warn_health_percent = 75
@@ -27,21 +23,18 @@ FAIL_SCORE_DELTA = 15
 class BatteryPlugin(DoctorPlugin):
     name = "battery"
     description = "Reports battery health, cycle count, and charging state."
-    capabilities = [Capability.BATTERY_INFORMATION, Capability.SHELL_COMMANDS]
+    capabilities = [Capability.BATTERY_INFORMATION]
 
     def __init__(self, thresholds: dict[str, float] | None = None) -> None:
         self.thresholds = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
 
     def is_supported(self) -> bool:
-        """Only run on systems that report a battery (i.e. not desktops)."""
-        try:
-            return psutil.sensors_battery() is not None
-        except Exception:
-            return False
+        return self.use_service(BatteryService).get_battery_status() is not None
 
     def run(self) -> PluginResult:
         try:
-            battery = psutil.sensors_battery()
+            battery_service = self.use_service(BatteryService)
+            battery = battery_service.get_battery_status()
             if battery is None:
                 return PluginResult(
                     plugin_name=self.name,
@@ -57,7 +50,7 @@ class BatteryPlugin(DoctorPlugin):
             status = Status.PASS
             score_delta = 0
 
-            health_data = self._read_macos_health()
+            health_data = battery_service.get_macos_health()
             cycle_count = health_data[0] if health_data else None
             max_capacity_percent = health_data[1] if health_data else None
 
@@ -114,33 +107,3 @@ class BatteryPlugin(DoctorPlugin):
                 status=Status.FAIL,
                 findings=[Finding(summary="Could not read battery information", detail=str(e))],
             )
-
-    def _read_macos_health(self) -> tuple[int, float] | None:
-        """Read cycle count and max-capacity health via system_profiler.
-
-        macOS-only: psutil doesn't expose this data on any platform, and
-        there's no equivalent Linux/Windows API being handled yet. Returns
-        None outside macOS or if parsing ever fails — the plugin degrades
-        gracefully to charge %/plugged-state only in that case, it never
-        raises up to run().
-        """
-        if platform.system() != "Darwin":
-            return None
-
-        try:
-            output = subprocess.run(
-                ["system_profiler", "SPPowerDataType"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=True,
-            ).stdout
-
-            cycle_match = re.search(r"Cycle Count:\s*(\d+)", output)
-            max_cap_match = re.search(r"Maximum Capacity:\s*(\d+)%", output)
-
-            if cycle_match and max_cap_match:
-                return int(cycle_match.group(1)), float(max_cap_match.group(1))
-            return None
-        except (subprocess.SubprocessError, OSError, ValueError):
-            return None
