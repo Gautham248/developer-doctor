@@ -6,7 +6,7 @@ from doctor.formatters.html_formatter import render_html
 from doctor.formatters.json_formatter import render_json
 from doctor.formatters.yaml_formatter import render_yaml
 from doctor.models import Report
-from doctor.registry import get_plugins
+from doctor.registry import discover_all_plugins
 from doctor.report import render_report
 from doctor.scoring import compute_health_score
 
@@ -27,7 +27,14 @@ def main(
         raise typer.Exit(code=1)
 
     config = load_config()
-    results = [plugin.run() for plugin in get_plugins(config)]
+    plugins, discovery_errors = discover_all_plugins(config)
+
+    machine_readable = json_output or yaml_output or html_output
+    if discovery_errors and not machine_readable:
+        for error in discovery_errors:
+            console.print(f"[yellow]Warning:[/yellow] {error}")
+
+    results = [plugin.run() for plugin in plugins]
     score = compute_health_score(results)
     report = Report(score=score, results=results)
 
