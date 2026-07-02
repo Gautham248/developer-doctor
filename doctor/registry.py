@@ -1,3 +1,4 @@
+from doctor.config import DoctorConfig
 from doctor.plugins.ai_ide import AIIDEPlugin
 from doctor.plugins.base import DoctorPlugin
 from doctor.plugins.battery import BatteryPlugin
@@ -11,11 +12,13 @@ from doctor.plugins.python import PythonPlugin
 from doctor.plugins.system import SystemPlugin
 
 
-def get_plugins() -> list[DoctorPlugin]:
-    plugins: list[DoctorPlugin] = [
+def get_plugins(config: DoctorConfig | None = None) -> list[DoctorPlugin]:
+    cfg = config or DoctorConfig()
+
+    all_plugins: list[DoctorPlugin] = [
         SystemPlugin(),
-        CPUPlugin(),
-        MemoryPlugin(),
+        CPUPlugin(thresholds=cfg.thresholds.get("cpu")),
+        MemoryPlugin(thresholds=cfg.thresholds.get("memory")),
         BatteryPlugin(),
         DiskPlugin(),
         GitPlugin(),
@@ -24,4 +27,10 @@ def get_plugins() -> list[DoctorPlugin]:
         PythonPlugin(),
         AIIDEPlugin(),
     ]
-    return [p for p in plugins if p.is_supported()]
+
+    if cfg.plugins.enabled:
+        selected = [p for p in all_plugins if p.name in cfg.plugins.enabled]
+    else:
+        selected = [p for p in all_plugins if p.name not in cfg.plugins.disabled]
+
+    return [p for p in selected if p.is_supported()]

@@ -1,12 +1,20 @@
+import time
+
 import psutil
 
 from doctor.models import Finding, PluginResult, Status
 from doctor.plugins.base import DoctorPlugin
 
-# Hardcoded thresholds — to be made configurable via doctor.toml (§15) later.
-WARN_CPU_PERCENT = 70.0
-FAIL_CPU_PERCENT = 90.0
-RUNAWAY_PROCESS_CPU_PERCENT = 80.0
+# Defaults — overridable per-project via doctor.toml:
+# [thresholds.cpu]
+# warn_percent = 60
+# fail_percent = 85
+# runaway_process_percent = 75
+DEFAULT_THRESHOLDS = {
+    "warn_percent": 70.0,
+    "fail_percent": 90.0,
+    "runaway_process_percent": 80.0,
+}
 
 WARN_SCORE_DELTA = 5
 FAIL_SCORE_DELTA = 15
@@ -18,6 +26,9 @@ class CPUPlugin(DoctorPlugin):
     name = "cpu"
     description = "Reports CPU usage and flags runaway processes."
 
+    def __init__(self, thresholds: dict[str, float] | None = None) -> None:
+        self.thresholds = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
+
     def run(self) -> PluginResult:
         try:
             top_processes, cpu_percent, load_avg = self._sample()
@@ -27,16 +38,16 @@ class CPUPlugin(DoctorPlugin):
             status = Status.PASS
             score_delta = 0
 
-            if cpu_percent >= FAIL_CPU_PERCENT:
+            if cpu_percent >= self.thresholds["fail_percent"]:
                 status = Status.FAIL
                 score_delta = FAIL_SCORE_DELTA
-            elif cpu_percent >= WARN_CPU_PERCENT:
+            elif cpu_percent >= self.thresholds["warn_percent"]:
                 status = Status.WARN
                 score_delta = WARN_SCORE_DELTA
 
             for proc_name, proc_cpu in top_processes:
                 findings.append(Finding(summary=f"{proc_name}: {proc_cpu:.0f}% CPU"))
-                if proc_cpu >= RUNAWAY_PROCESS_CPU_PERCENT:
+                if proc_cpu >= self.thresholds["runaway_process_percent"]:
                     if status == Status.PASS:
                         status = Status.WARN
                         score_delta = max(score_delta, WARN_SCORE_DELTA)
@@ -81,7 +92,6 @@ class CPUPlugin(DoctorPlugin):
         for both the system-wide and per-process numbers, so we only pay
         the latency cost once.
         """
-        # Prime: system-wide (non-blocking) + every process's counter.
         psutil.cpu_percent(interval=None)
         procs = []
         for proc in psutil.process_iter(["name"]):
@@ -91,11 +101,8 @@ class CPUPlugin(DoctorPlugin):
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
 
-        import time
-
         time.sleep(SAMPLE_INTERVAL_SECONDS)
 
-        # Real reading, using the same window for system and process stats.
         cpu_percent = psutil.cpu_percent(interval=None)
         load_avg = psutil.getloadavg()
 

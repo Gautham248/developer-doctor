@@ -3,11 +3,18 @@ import psutil
 from doctor.models import Finding, PluginResult, Status
 from doctor.plugins.base import DoctorPlugin
 
-# Hardcoded thresholds — to be made configurable via doctor.toml (§15) later.
-WARN_MEMORY_PERCENT = 80.0
-FAIL_MEMORY_PERCENT = 95.0
-WARN_SWAP_USED_GB = 2.0
-FAIL_SWAP_USED_GB = 8.0
+# Defaults — overridable per-project via doctor.toml:
+# [thresholds.memory]
+# warn_percent = 75
+# fail_percent = 92
+# warn_swap_gb = 1.5
+# fail_swap_gb = 6
+DEFAULT_THRESHOLDS = {
+    "warn_percent": 80.0,
+    "fail_percent": 95.0,
+    "warn_swap_gb": 2.0,
+    "fail_swap_gb": 8.0,
+}
 
 WARN_SCORE_DELTA = 5
 FAIL_SCORE_DELTA = 15
@@ -16,6 +23,9 @@ FAIL_SCORE_DELTA = 15
 class MemoryPlugin(DoctorPlugin):
     name = "memory"
     description = "Reports RAM and swap usage, flags memory pressure."
+
+    def __init__(self, thresholds: dict[str, float] | None = None) -> None:
+        self.thresholds = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
 
     def run(self) -> PluginResult:
         try:
@@ -33,14 +43,14 @@ class MemoryPlugin(DoctorPlugin):
             status = Status.PASS
             score_delta = 0
 
-            if vm.percent >= FAIL_MEMORY_PERCENT:
+            if vm.percent >= self.thresholds["fail_percent"]:
                 status = Status.FAIL
                 score_delta = FAIL_SCORE_DELTA
                 recommendations.append(
                     "Memory usage is critically high. Close unused applications "
                     "or browser tabs to free up RAM."
                 )
-            elif vm.percent >= WARN_MEMORY_PERCENT:
+            elif vm.percent >= self.thresholds["warn_percent"]:
                 status = Status.WARN
                 score_delta = WARN_SCORE_DELTA
                 recommendations.append(
@@ -50,7 +60,7 @@ class MemoryPlugin(DoctorPlugin):
             if swap_used_gb > 0:
                 findings.append(Finding(summary=f"Swap: {swap_used_gb} GB used"))
 
-                if swap_used_gb >= FAIL_SWAP_USED_GB:
+                if swap_used_gb >= self.thresholds["fail_swap_gb"]:
                     status = Status.FAIL
                     score_delta = max(score_delta, FAIL_SCORE_DELTA)
                     recommendations.append(
@@ -58,7 +68,7 @@ class MemoryPlugin(DoctorPlugin):
                         f"pressure — the system is actively paging to disk, which will "
                         f"feel slow. Restart memory-heavy applications."
                     )
-                elif swap_used_gb >= WARN_SWAP_USED_GB:
+                elif swap_used_gb >= self.thresholds["warn_swap_gb"]:
                     if status == Status.PASS:
                         status = Status.WARN
                     score_delta = max(score_delta, WARN_SCORE_DELTA)

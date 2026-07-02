@@ -1,6 +1,7 @@
 import typer
 from rich.console import Console
 
+from doctor.config import load_config
 from doctor.formatters.html_formatter import render_html
 from doctor.formatters.json_formatter import render_json
 from doctor.formatters.yaml_formatter import render_yaml
@@ -25,7 +26,8 @@ def main(
         console.print("[bold red]Error:[/bold red] --json, --yaml, and --html are mutually exclusive.")
         raise typer.Exit(code=1)
 
-    results = [plugin.run() for plugin in get_plugins()]
+    config = load_config()
+    results = [plugin.run() for plugin in get_plugins(config)]
     score = compute_health_score(results)
     report = Report(score=score, results=results)
 
