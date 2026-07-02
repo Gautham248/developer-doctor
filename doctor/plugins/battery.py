@@ -7,11 +7,18 @@ import psutil
 from doctor.models import Finding, PluginResult, Status
 from doctor.plugins.base import DoctorPlugin
 
-# Hardcoded thresholds — to be made configurable via doctor.toml (§15) later.
-WARN_HEALTH_PERCENT = 80.0
-FAIL_HEALTH_PERCENT = 60.0
-WARN_CYCLE_COUNT = 800
-FAIL_CYCLE_COUNT = 1000
+# Defaults — overridable per-project via doctor.toml:
+# [thresholds.battery]
+# warn_health_percent = 75
+# fail_health_percent = 55
+# warn_cycle_count = 700
+# fail_cycle_count = 900
+DEFAULT_THRESHOLDS = {
+    "warn_health_percent": 80.0,
+    "fail_health_percent": 60.0,
+    "warn_cycle_count": 800.0,
+    "fail_cycle_count": 1000.0,
+}
 
 WARN_SCORE_DELTA = 5
 FAIL_SCORE_DELTA = 15
@@ -20,6 +27,9 @@ FAIL_SCORE_DELTA = 15
 class BatteryPlugin(DoctorPlugin):
     name = "battery"
     description = "Reports battery health, cycle count, and charging state."
+
+    def __init__(self, thresholds: dict[str, float] | None = None) -> None:
+        self.thresholds = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
 
     def is_supported(self) -> bool:
         """Only run on systems that report a battery (i.e. not desktops)."""
@@ -32,9 +42,6 @@ class BatteryPlugin(DoctorPlugin):
         try:
             battery = psutil.sensors_battery()
             if battery is None:
-                # Shouldn't normally be reached since is_supported() gates
-                # this, but handle it defensively (e.g. battery unplugged
-                # mid-run on a system with a removable battery).
                 return PluginResult(
                     plugin_name=self.name,
                     status=Status.INFO,
@@ -60,11 +67,17 @@ class BatteryPlugin(DoctorPlugin):
                 )
 
                 critical = (
-                    max_capacity_percent is not None and max_capacity_percent <= FAIL_HEALTH_PERCENT
-                ) or (cycle_count is not None and cycle_count >= FAIL_CYCLE_COUNT)
+                    max_capacity_percent is not None
+                    and max_capacity_percent <= self.thresholds["fail_health_percent"]
+                ) or (
+                    cycle_count is not None and cycle_count >= self.thresholds["fail_cycle_count"]
+                )
                 degraded = (
-                    max_capacity_percent is not None and max_capacity_percent <= WARN_HEALTH_PERCENT
-                ) or (cycle_count is not None and cycle_count >= WARN_CYCLE_COUNT)
+                    max_capacity_percent is not None
+                    and max_capacity_percent <= self.thresholds["warn_health_percent"]
+                ) or (
+                    cycle_count is not None and cycle_count >= self.thresholds["warn_cycle_count"]
+                )
 
                 if critical:
                     status = Status.FAIL

@@ -30,3 +30,9 @@ def test_get_plugins_applies_cpu_threshold_overrides():
     plugins = get_plugins(config)
     cpu_plugin = next(p for p in plugins if p.name == "cpu")
     assert cpu_plugin.thresholds["warn_percent"] == 10.0  # type: ignore[attr-defined]
+
+def test_get_plugins_applies_disk_threshold_overrides():
+    config = DoctorConfig(thresholds={"disk": {"warn_percent": 50.0}})
+    plugins = get_plugins(config)
+    disk_plugin = next(p for p in plugins if p.name == "disk")
+    assert disk_plugin.thresholds["warn_percent"] == 50.0  # type: ignore[attr-defined]

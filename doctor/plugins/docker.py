@@ -5,8 +5,14 @@ import subprocess
 from doctor.models import Finding, PluginResult, Status
 from doctor.plugins.base import DoctorPlugin
 
-WARN_CONTAINER_MEMORY_GB = 8.0
-FAIL_CONTAINER_MEMORY_GB = 16.0
+# Defaults — overridable per-project via doctor.toml:
+# [thresholds.docker]
+# warn_container_memory_gb = 6
+# fail_container_memory_gb = 12
+DEFAULT_THRESHOLDS = {
+    "warn_container_memory_gb": 8.0,
+    "fail_container_memory_gb": 16.0,
+}
 
 WARN_SCORE_DELTA = 5
 FAIL_SCORE_DELTA = 15
@@ -17,6 +23,9 @@ DOCKER_TIMEOUT_SECONDS = 5
 class DockerPlugin(DoctorPlugin):
     name = "docker"
     description = "Checks whether Docker is installed, running, and reports container count/resource usage."
+
+    def __init__(self, thresholds: dict[str, float] | None = None) -> None:
+        self.thresholds = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
 
     def is_supported(self) -> bool:
         return shutil.which("docker") is not None
@@ -51,14 +60,14 @@ class DockerPlugin(DoctorPlugin):
                     Finding(summary=f"Containers using {total_container_memory_gb:.1f} GB RAM")
                 )
 
-                if total_container_memory_gb >= FAIL_CONTAINER_MEMORY_GB:
+                if total_container_memory_gb >= self.thresholds["fail_container_memory_gb"]:
                     status = Status.FAIL
                     score_delta = FAIL_SCORE_DELTA
                     recommendations.append(
                         f"Containers are using {total_container_memory_gb:.1f} GB of RAM. "
                         f"Check for runaway or forgotten containers with 'docker stats'."
                     )
-                elif total_container_memory_gb >= WARN_CONTAINER_MEMORY_GB:
+                elif total_container_memory_gb >= self.thresholds["warn_container_memory_gb"]:
                     status = Status.WARN
                     score_delta = WARN_SCORE_DELTA
                     recommendations.append(
