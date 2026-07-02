@@ -1,6 +1,7 @@
 import typer
 from rich.console import Console
 
+from doctor.formatters.html_formatter import render_html
 from doctor.formatters.json_formatter import render_json
 from doctor.formatters.yaml_formatter import render_yaml
 from doctor.models import Report
@@ -16,10 +17,12 @@ console = Console()
 def main(
     json_output: bool = typer.Option(False, "--json", help="Output a machine-readable JSON report."),
     yaml_output: bool = typer.Option(False, "--yaml", help="Output a machine-readable YAML report."),
+    html_output: bool = typer.Option(False, "--html", help="Output a self-contained HTML report."),
 ) -> None:
     """Run all diagnostics and print a health report."""
-    if json_output and yaml_output:
-        console.print("[bold red]Error:[/bold red] --json and --yaml cannot be used together.")
+    selected_formats = [f for f in (json_output, yaml_output, html_output) if f]
+    if len(selected_formats) > 1:
+        console.print("[bold red]Error:[/bold red] --json, --yaml, and --html are mutually exclusive.")
         raise typer.Exit(code=1)
 
     results = [plugin.run() for plugin in get_plugins()]
@@ -30,6 +33,8 @@ def main(
         print(render_json(report))
     elif yaml_output:
         print(render_yaml(report))
+    elif html_output:
+        print(render_html(report))
     else:
         render_report(results, score, console)
 
