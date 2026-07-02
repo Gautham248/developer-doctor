@@ -1,13 +1,11 @@
-import typer
-from rich.console import Console
 from pathlib import Path
 
-from doctor.discovery import load_plugins_from_file
-from doctor.sdk.scaffold import scaffold_plugin
-from doctor.sdk.testing import PluginTestHarness
+import typer
+from rich.console import Console
 
 from doctor.baseline import diff_reports, load_baseline, save_baseline
 from doctor.config import load_config
+from doctor.discovery import load_plugins_from_file
 from doctor.formatters.html_formatter import render_html
 from doctor.formatters.json_formatter import render_json
 from doctor.formatters.yaml_formatter import render_yaml
@@ -15,13 +13,18 @@ from doctor.models import Report
 from doctor.registry import discover_all_plugins
 from doctor.report import render_diff, render_report, render_trends
 from doctor.scoring import compute_health_score, has_critical_failures
+from doctor.sdk.lint import lint_plugin
+from doctor.sdk.package import package_plugin
+from doctor.sdk.publish import check_package, upload_package
+from doctor.sdk.scaffold import scaffold_plugin
+from doctor.sdk.testing import PluginTestHarness
 from doctor.snapshot import find_closest_snapshot, load_snapshots, parse_time_spec, save_snapshot
 from doctor.trend import MIN_SNAPSHOTS_FOR_TREND, compute_trends
 
 app = typer.Typer(help="Developer Doctor — diagnose your dev workstation")
 baseline_app = typer.Typer(help="Capture and compare baseline system snapshots (§16).")
+plugin_app = typer.Typer(help="Scaffold, validate, lint, package, and publish Developer Doctor plugins (§22).")
 app.add_typer(baseline_app, name="baseline")
-plugin_app = typer.Typer(help="Scaffold, and validate Developer Doctor plugins (§22).")
 app.add_typer(plugin_app, name="plugin")
 
 console = Console()
@@ -182,6 +185,7 @@ def trend_cmd() -> None:
     trends = compute_trends(snapshots)
     render_trends(trends, len(snapshots), console)
 
+
 @plugin_app.command("create")
 def plugin_create(
     name: str = typer.Argument(
@@ -243,6 +247,102 @@ def plugin_validate(
         raise typer.Exit(code=1)
 
     console.print("\n[green]Validation passed.[/green]")
+
+
+@plugin_app.command("lint")
+def plugin_lint(
+    path: Path = typer.Argument(..., help="Path to a plugin file or project directory to lint."),
+) -> None:
+    """Run ruff and mypy against a plugin (each tool is skipped, not
+    failed, if it isn't installed)."""
+    result = lint_plugin(path)
+    for tool_result in result.results:
+        status = "skipped" if not tool_result.ran else ("passed" if tool_result.passed else "FAILED")
+        console.print(f"\n[bold]{tool_result.tool}[/bold]: {status}")
+        if tool_result.output:
+            console.print(tool_result.output)
+
+    if not result.passed:
+        console.print("\n[bold red]Lint failed.[/bold red]")
+        raise typer.Exit(code=1)
+    console.print("\n[green]Lint passed.[/green]")
+
+
+@plugin_app.command("package")
+def plugin_package(
+    path: Path = typer.Argument(
+        ..., help="Path to the plugin project directory (containing pyproject.toml)."
+    ),
+) -> None:
+    """Build a plugin into a wheel + sdist via `uv build`."""
+    result = package_plugin(path)
+    if result.output:
+        console.print(result.output)
+
+    if not result.success:
+        console.print("\n[bold red]Package build failed.[/bold red]")
+        raise typer.Exit(code=1)
+
+    console.print(f"\n[green]Built {len(result.artifacts)} artifact(s):[/green]")
+    for artifact in result.artifacts:
+        console.print(f"  {artifact}")
+
+
+@plugin_app.command("publish")
+def plugin_publish(
+    path: Path = typer.Argument(
+        ..., help="Path to the plugin project directory (containing built dist/ artifacts)."
+    ),
+    repository: str = typer.Option(
+        "testpypi",
+        "--repository",
+        help="twine repository to publish to. Defaults to testpypi — pass "
+        "'--repository pypi' explicitly to publish to the real index.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        help="Skip the interactive confirmation prompt. The action is still explicit — "
+        "you must pass this flag deliberately.",
+    ),
+) -> None:
+    """Validate and publish a plugin package via twine.
+
+    Always runs `twine check` first (local, no network). Actually
+    uploading is a real, irreversible action against an external
+    package index, so it never happens without an explicit
+    confirmation — either an interactive 'yes' or the --yes flag.
+    """
+    check_result = check_package(path)
+    if check_result.output:
+        console.print(check_result.output)
+
+    if not check_result.success:
+        console.print("\n[bold red]Package validation (twine check) failed. Not publishing.[/bold red]")
+        raise typer.Exit(code=1)
+
+    console.print("[green]Package validation passed.[/green]")
+    console.print(
+        f"\nAbout to upload to repository '[bold]{repository}[/bold]'. "
+        f"This is a real, irreversible action."
+    )
+
+    if not yes:
+        confirmed = typer.confirm(f"Upload to '{repository}' now?")
+        if not confirmed:
+            console.print("Aborted. No upload performed.")
+            raise typer.Exit(code=0)
+
+    upload_result = upload_package(path, repository)
+    if upload_result.output:
+        console.print(upload_result.output)
+
+    if not upload_result.success:
+        console.print("\n[bold red]Upload failed.[/bold red]")
+        raise typer.Exit(code=1)
+
+    console.print(f"\n[green]Published to '{repository}'.[/green]")
+
 
 if __name__ == "__main__":
     app()

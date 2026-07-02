@@ -53,7 +53,8 @@ def scaffold_plugin(name: str, target_dir: Path | None = None) -> Path:
     (package_dir / "__init__.py").write_text("")
 
     (package_dir / "plugin.py").write_text(
-        f'''from doctor.models import Finding, PluginResult, Status
+        f'''from doctor.capabilities import Capability
+from doctor.models import Finding, PluginResult, Status
 from doctor.plugins.base import DoctorPlugin
 
 
@@ -61,8 +62,8 @@ class {class_name}(DoctorPlugin):
     name = "{name}"
     description = "TODO: describe what this plugin checks."
     # Declare capabilities from doctor.capabilities.Capability as needed,
-    # e.g. capabilities = [Capability.SHELL_COMMANDS]
-    capabilities = []
+    # e.g. capabilities: list[Capability] = [Capability.SHELL_COMMANDS]
+    capabilities: list[Capability] = []
 
     def is_supported(self) -> bool:
         # TODO: return False here if this plugin shouldn't run on this
