@@ -8,7 +8,7 @@ from doctor.formatters.yaml_formatter import render_yaml
 from doctor.models import Report
 from doctor.registry import discover_all_plugins
 from doctor.report import render_report
-from doctor.scoring import compute_health_score
+from doctor.scoring import compute_health_score, has_critical_failures
 
 app = typer.Typer(help="Developer Doctor — diagnose your dev workstation")
 console = Console()
@@ -19,6 +19,11 @@ def main(
     json_output: bool = typer.Option(False, "--json", help="Output a machine-readable JSON report."),
     yaml_output: bool = typer.Option(False, "--yaml", help="Output a machine-readable YAML report."),
     html_output: bool = typer.Option(False, "--html", help="Output a self-contained HTML report."),
+    ci: bool = typer.Option(
+        False,
+        "--ci",
+        help="CI mode: exit with a non-zero status code if any plugin reports a critical (FAIL) issue.",
+    ),
 ) -> None:
     """Run all diagnostics and print a health report."""
     selected_formats = [f for f in (json_output, yaml_output, html_output) if f]
@@ -46,6 +51,11 @@ def main(
         print(render_html(report))
     else:
         render_report(results, score, console)
+
+    if ci and has_critical_failures(results):
+        if not machine_readable:
+            console.print("[bold red]CI mode:[/bold red] critical issues detected, exiting non-zero.")
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
