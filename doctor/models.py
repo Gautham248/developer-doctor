@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -34,3 +35,12 @@ class PluginResult(BaseModel):
         default=None,
         description="Optional raw machine-readable payload for JSON/YAML renderers.",
     )
+
+
+class Report(BaseModel):
+    """The full output of a doctor run — the single object every renderer
+    (Rich terminal, JSON, YAML, future HTML/SARIF/JUnit) consumes."""
+
+    score: int
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    results: list[PluginResult]
