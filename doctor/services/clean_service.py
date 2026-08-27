@@ -45,8 +45,8 @@ class CleanService(BaseService):
         return total_freed
 
     def docker_prune_images(self) -> int:
-        """Prune dangling Docker images. Returns bytes freed."""
-        return self._run_docker_prune(["docker", "image", "prune", "-f"])
+        """Prune all unused Docker images. Returns bytes freed."""
+        return self._run_docker_prune(["docker", "image", "prune", "-a", "-f"])
 
     def docker_prune_containers(self) -> int:
         """Prune stopped Docker containers. Returns bytes freed."""
@@ -57,8 +57,8 @@ class CleanService(BaseService):
         return self._run_docker_prune(["docker", "volume", "prune", "-f"])
 
     def docker_prune_build_cache(self) -> int:
-        """Prune unused Docker build cache. Returns bytes freed."""
-        return self._run_docker_prune(["docker", "builder", "prune", "-f"])
+        """Prune all unused Docker build cache. Returns bytes freed."""
+        return self._run_docker_prune(["docker", "builder", "prune", "-a", "-f"])
 
     def brew_cleanup(self) -> int:
         """Run `brew cleanup`."""
