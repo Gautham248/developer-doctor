@@ -8,6 +8,7 @@ from doctor.plugins.disk import DiskPlugin
 from doctor.plugins.docker import DockerPlugin
 from doctor.plugins.git import GitPlugin
 from doctor.plugins.memory import MemoryPlugin
+from doctor.plugins.network import NetworkPlugin
 from doctor.plugins.node import NodePlugin
 from doctor.plugins.python import PythonPlugin
 from doctor.plugins.system import SystemPlugin
@@ -20,6 +21,7 @@ def _builtin_plugins(cfg: DoctorConfig) -> list[DoctorPlugin]:
         MemoryPlugin(thresholds=cfg.thresholds.get("memory")),
         BatteryPlugin(thresholds=cfg.thresholds.get("battery")),
         DiskPlugin(thresholds=cfg.thresholds.get("disk")),
+        NetworkPlugin(),
         GitPlugin(),
         DockerPlugin(thresholds=cfg.thresholds.get("docker")),
         NodePlugin(),

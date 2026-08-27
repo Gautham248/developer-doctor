@@ -9,8 +9,13 @@ from doctor.discovery import load_plugins_from_file
 from doctor.formatters.html_formatter import render_html
 from doctor.formatters.json_formatter import render_json
 from doctor.formatters.yaml_formatter import render_yaml
-from doctor.models import Report
+from doctor.models import Report, CleanupReport
 from doctor.registry import discover_all_plugins
+from concurrent.futures import ThreadPoolExecutor
+from doctor.cleanup import ALL_SCANNERS
+from doctor.services.cleanup_service import CleanupService
+from doctor.services.clean_service import CleanService
+from doctor.cleanup_render import render_cleanup_scan, render_cleanup_summary, format_bytes
 from doctor.report import render_diff, render_report, render_trends
 from doctor.scoring import compute_health_score, has_critical_failures
 from doctor.sdk.lint import lint_plugin
@@ -342,6 +347,157 @@ def plugin_publish(
         raise typer.Exit(code=1)
 
     console.print(f"\n[green]Published to '{repository}'.[/green]")
+
+
+@app.command("cleanup")
+def cleanup_cmd(
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Clean all safe categories automatically without prompting.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Scan and report sizes only; do not delete anything.",
+    ),
+    categories: list[str] = typer.Option(
+        None,
+        "--category",
+        "-c",
+        help="Restrict to specific category name(s), e.g. -c docker -c xcode (can be repeated).",
+    ),
+    include_unsafe: bool = typer.Option(
+        False,
+        "--include-unsafe",
+        help="Also clean categories marked unsafe to auto-clean (like local node_modules).",
+    ),
+) -> None:
+    """Scan and clean up residual junk files from the system and build tools."""
+    # 1. Initialize and run scanners
+    supported_scanners = [s() for s in ALL_SCANNERS if s().is_supported()]
+    
+    if categories:
+        cat_names = [c.lower().strip() for c in categories]
+        supported_scanners = [s for s in supported_scanners if s.name in cat_names]
+        if not supported_scanners:
+            console.print(f"[yellow]No supported scanners match the categories: {categories}[/yellow]")
+            raise typer.Exit(code=0)
+
+    cleanup_service = CleanupService()
+    scan_results = []
+
+    console.print("[bold cyan]Scanning for junk files...[/bold cyan]")
+    with ThreadPoolExecutor() as executor:
+        futures = {executor.submit(s.scan, cleanup_service): s for s in supported_scanners}
+        for fut in futures:
+            s = futures[fut]
+            try:
+                res = fut.result()
+                if res.size_bytes > 0:
+                    scan_results.append(res)
+            except Exception as e:
+                console.print(f"[yellow]Warning: Scanner {s.name} failed to scan: {e}[/yellow]")
+
+    scan_results.sort(key=lambda x: x.size_bytes, reverse=True)
+    report = CleanupReport(
+        categories=scan_results,
+        total_size_bytes=sum(c.size_bytes for c in scan_results),
+    )
+
+    if not scan_results:
+        console.print("\n[green]No cleanup required. Everything is clean![/green]")
+        raise typer.Exit(code=0)
+
+    render_cleanup_scan(report, console)
+
+    if dry_run:
+        console.print("[yellow]Dry-run mode active. No files were deleted.[/yellow]")
+        raise typer.Exit(code=0)
+
+    selected_categories = []
+    
+    if not yes:
+        proceed = typer.confirm("Do you want to proceed with cleaning up?")
+        if not proceed:
+            console.print("Cleanup aborted. No files were deleted.")
+            raise typer.Exit(code=0)
+
+        # Interactive picker
+        console.print("\n[bold]Select which categories you want to clean up:[/bold]")
+        for idx, cat in enumerate(scan_results, 1):
+            warning = " [bold yellow](WARNING: contains workspace files)[/bold yellow]" if not cat.is_safe_to_auto_clean else ""
+            console.print(f"  [{idx}] {cat.label} ({format_bytes(cat.size_bytes)}){warning}")
+        
+        selection_input = typer.prompt(
+            "\nEnter numbers (comma-separated, e.g. 1,3), 'all', or 'none'",
+            default="all",
+        )
+        
+        sel = selection_input.strip().lower()
+        if sel == "all":
+            selected_categories = list(scan_results)
+        elif sel in ("none", ""):
+            console.print("No categories selected. Exiting.")
+            raise typer.Exit(code=0)
+        else:
+            try:
+                indices = [int(i.strip()) for i in sel.split(",")]
+                for idx in indices:
+                    if 1 <= idx <= len(scan_results):
+                        selected_categories.append(scan_results[idx - 1])
+                    else:
+                        console.print(f"[yellow]Warning: Invalid index {idx} ignored.[/yellow]")
+            except ValueError:
+                console.print("[bold red]Error: Invalid selection input format.[/bold red]")
+                raise typer.Exit(code=1)
+    else:
+        for cat in scan_results:
+            if cat.is_safe_to_auto_clean or include_unsafe:
+                selected_categories.append(cat)
+            else:
+                console.print(
+                    f"[yellow]Skipping category '{cat.name}' as it contains workspace files "
+                    "and --include-unsafe was not set.[/yellow]"
+                )
+
+    to_clean = []
+    for cat in selected_categories:
+        if not cat.is_safe_to_auto_clean and not include_unsafe:
+            confirm_unsafe = typer.confirm(
+                f"Category '{cat.name}' is marked as unsafe to auto-clean (workspace files). Proceed anyway?",
+                default=False,
+            )
+            if not confirm_unsafe:
+                console.print(f"Skipping {cat.label}.")
+                continue
+        to_clean.append(cat)
+
+    if not to_clean:
+        console.print("No categories to clean. Exiting.")
+        raise typer.Exit(code=0)
+
+    clean_service = CleanService()
+    total_freed = 0
+    cleaned_names = []
+
+    console.print("\n[bold cyan]Cleaning up...[/bold cyan]")
+    scanner_map = {s.name: s for s in supported_scanners}
+    
+    for cat in to_clean:
+        scanner = scanner_map.get(cat.name)
+        if scanner:
+            console.print(f"  Cleaning {cat.label}...", end="")
+            try:
+                freed = scanner.clean(clean_service, cat)
+                total_freed += freed
+                cleaned_names.append(cat.name)
+                console.print(f" [green]Done (reclaimed {format_bytes(freed)})[/green]")
+            except Exception as e:
+                console.print(f" [red]Failed: {e}[/red]")
+
+    render_cleanup_summary(total_freed, cleaned_names, console)
 
 
 if __name__ == "__main__":

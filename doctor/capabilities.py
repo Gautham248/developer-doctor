@@ -27,6 +27,8 @@ class Capability(str, Enum):
     DOCKER_DAEMON_ACCESS = "docker_daemon_access"
     KUBERNETES_API_ACCESS = "kubernetes_api_access"
     GIT_REPOSITORY_ACCESS = "git_repository_access"
+    FILESYSTEM_SCAN = "filesystem_scan"
+    FILESYSTEM_CLEAN = "filesystem_clean"
 
 
 class CapabilityError(Exception):

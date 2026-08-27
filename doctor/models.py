@@ -44,3 +44,16 @@ class Report(BaseModel):
     score: int
     generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     results: list[PluginResult]
+
+
+class CleanupCategory(BaseModel):
+    name: str                          # e.g. "docker"
+    label: str                         # e.g. "Docker unused resources"
+    size_bytes: int                    # measured size in bytes
+    paths: list[str] = Field(default_factory=list) # resolved paths (informational)
+    is_safe_to_auto_clean: bool = True # False for things like node_modules
+
+class CleanupReport(BaseModel):
+    categories: list[CleanupCategory] = Field(default_factory=list)
+    total_size_bytes: int
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
