@@ -29,6 +29,7 @@ class Capability(str, Enum):
     GIT_REPOSITORY_ACCESS = "git_repository_access"
     FILESYSTEM_SCAN = "filesystem_scan"
     FILESYSTEM_CLEAN = "filesystem_clean"
+    THERMAL_MONITORING = "thermal_monitoring"
 
 
 class CapabilityError(Exception):

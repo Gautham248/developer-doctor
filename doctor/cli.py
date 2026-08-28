@@ -25,6 +25,12 @@ from doctor.sdk.scaffold import scaffold_plugin
 from doctor.sdk.testing import PluginTestHarness
 from doctor.snapshot import find_closest_snapshot, load_snapshots, parse_time_spec, save_snapshot
 from doctor.trend import MIN_SNAPSHOTS_FOR_TREND, compute_trends
+from doctor.services.thermal_service import ThermalService, KillSafety
+from doctor.services.thermal_optimizer import (
+    ThermalOptimizer,
+    OptimizationAction,
+    OptimizationCategory,
+)
 
 app = typer.Typer(help="Developer Doctor — diagnose your dev workstation")
 baseline_app = typer.Typer(help="Capture and compare baseline system snapshots (§16).")
@@ -498,6 +504,368 @@ def cleanup_cmd(
                 console.print(f" [red]Failed: {e}[/red]")
 
     render_cleanup_summary(total_freed, cleaned_names, console)
+
+
+
+# ---------------------------------------------------------------------------
+# `doctor thermal` command
+# ---------------------------------------------------------------------------
+
+@app.command("thermal")
+def thermal_cmd(
+    watch: bool = typer.Option(False, "--watch", "-w", help="Refresh every N seconds (Ctrl+C to quit)."),
+    interval: int = typer.Option(3, "--interval", help="Refresh interval in seconds (watch mode)."),
+    top: int = typer.Option(10, "--top", help="Number of top processes to display."),
+    threshold: float = typer.Option(1.0, "--threshold", help="Min CPU % to include a process."),
+    kill: bool = typer.Option(False, "--kill", help="Interactive per-process kill mode."),
+    optimize: bool = typer.Option(False, "--optimize", help="Scan and propose optimization plan."),
+    auto_optimize: bool = typer.Option(False, "--auto-optimize", help="Silently apply all SAFE optimizations."),
+) -> None:
+    """Show thermal pressure, power draw, and heat-generating processes.
+
+    Use --optimize to get an actionable plan to reduce CPU heat.
+    Use --kill to manually terminate specific processes.
+    """
+    import time as _time
+
+    service = ThermalService()
+    optimizer = ThermalOptimizer()
+
+    def _run_once() -> None:
+        state = service.get_thermal_state()
+        processes = service.get_thermal_processes(limit=top, min_cpu_percent=threshold)
+
+        _render_thermal_header(state, console)
+        _render_process_table(processes, console)
+
+        if optimize or auto_optimize:
+            _run_optimize_flow(
+                processes, optimizer, console, auto_mode=auto_optimize
+            )
+        elif kill:
+            _run_kill_flow(processes, service, console)
+
+    if watch:
+        try:
+            while True:
+                console.clear()
+                _run_once()
+                console.print(
+                    f"\n[dim]Refreshing every {interval}s — Ctrl+C to quit[/dim]"
+                )
+                _time.sleep(interval)
+        except KeyboardInterrupt:
+            console.print("\n[dim]Stopped.[/dim]")
+    else:
+        _run_once()
+
+
+# ---------------------------------------------------------------------------
+# Thermal rendering helpers
+# ---------------------------------------------------------------------------
+
+_LEVEL_STYLES = {
+    "nominal":  ("green",  "NOMINAL"),
+    "fair":     ("yellow", "FAIR"),
+    "serious":  ("red",    "SERIOUS ⚠"),
+    "critical": ("bold red", "CRITICAL 🔥"),
+    "unknown":  ("dim",    "UNKNOWN"),
+}
+
+_SAFETY_DISPLAY = {
+    KillSafety.SAFE:    ("[green]✓ SAFE[/green]",    "green"),
+    KillSafety.CAUTION: ("[yellow]⚠ CAUTION[/yellow]", "yellow"),
+    KillSafety.UNSAFE:  ("[red]✗ UNSAFE[/red]",      "red"),
+}
+
+
+def _render_thermal_header(state: "ThermalState", console: Console) -> None:  # type: ignore[name-defined]
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.text import Text
+    from doctor.services.thermal_service import ThermalState  # noqa: F401
+
+    level = state.level
+    style, label = _LEVEL_STYLES.get(level, ("dim", level.upper()))
+
+    lines = Text()
+    lines.append("🌡  Thermal Pressure:  ", style="bold")
+    lines.append(label + "\n", style=style)
+
+    if state.temperature_c is not None:
+        lines.append(f"   Temperature:        {state.temperature_c:.1f} °C\n")
+    else:
+        lines.append("   Temperature:        N/A  (Apple Silicon — no raw °C)\n", style="dim")
+
+    if state.cpu_power_mw is not None:
+        lines.append(f"   CPU Power:          {state.cpu_power_mw:,.0f} mW\n")
+    if state.gpu_power_mw is not None:
+        lines.append(f"   GPU Power:          {state.gpu_power_mw:,.0f} mW\n")
+    if state.ane_power_mw is not None:
+        lines.append(f"   ANE Power:          {state.ane_power_mw:,.0f} mW\n")
+
+    source_labels = {
+        "macos_powermetrics":    "sudo powermetrics",
+        "macos_swift_fallback":  "Swift thermalState (sudo unavailable)",
+        "linux_sysfs":           "/sys/class/thermal",
+        "unavailable":           "unavailable",
+    }
+    lines.append(
+        f"   Data source:        {source_labels.get(state.source, state.source)}\n",
+        style="dim",
+    )
+    if state.pmset_warnings:
+        lines.append("   ⚠ pmset warnings:   Thermal/performance warnings recorded\n", style="yellow")
+
+    console.print(Panel(lines, title="[bold]Thermal Status[/bold]", border_style=style))
+    console.print()
+
+
+def _render_process_table(processes: list, console: Console) -> None:
+    from rich.table import Table
+
+    if not processes:
+        console.print("[dim]No processes above threshold.[/dim]")
+        return
+
+    table = Table(
+        title="Top Heat-Generating Processes",
+        show_header=True,
+        header_style="bold cyan",
+        border_style="dim",
+    )
+    table.add_column("#", style="dim", width=3)
+    table.add_column("PID", width=7)
+    table.add_column("Process", width=26)
+    table.add_column("CPU %", justify="right", width=8)
+    table.add_column("User", width=12)
+    table.add_column("Safe to Kill?", width=16)
+
+    for idx, proc in enumerate(processes, 1):
+        safety_display, _ = _SAFETY_DISPLAY[proc.kill_safety]
+        table.add_row(
+            str(idx),
+            str(proc.pid),
+            proc.name,
+            f"{proc.cpu_percent:.1f}%",
+            proc.username or "?",
+            safety_display,
+        )
+
+    console.print(table)
+    console.print(
+        "[dim]  Tip: high mW with low CPU % can indicate GPU/ANE load.[/dim]"
+    )
+    console.print(
+        "[dim]  Run with --kill to terminate processes, "
+        "--optimize to auto-reduce heat.[/dim]\n"
+    )
+
+
+def _run_kill_flow(processes: list, service: ThermalService, console: Console) -> None:
+    """Interactive per-process kill loop."""
+    candidates = [p for p in processes if p.kill_safety != KillSafety.UNSAFE]
+    if not candidates:
+        console.print("[yellow]No killable processes in the current list.[/yellow]")
+        return
+
+    console.print("[bold]Kill mode[/bold] — enter a PID to terminate (or 'q' to quit):\n")
+    pid_map = {p.pid: p for p in candidates}
+
+    while True:
+        raw = typer.prompt("PID to kill", default="q")
+        if raw.strip().lower() == "q":
+            break
+        try:
+            pid = int(raw.strip())
+        except ValueError:
+            console.print("[red]Invalid input — enter a numeric PID.[/red]")
+            continue
+
+        proc = pid_map.get(pid)
+        if proc is None:
+            console.print(f"[yellow]PID {pid} not in the current list.[/yellow]")
+            continue
+
+        if proc.kill_safety == KillSafety.CAUTION:
+            console.print(
+                f"[yellow]⚠ '{proc.name}' is marked CAUTION: {proc.kill_reason}[/yellow]"
+            )
+
+        confirmed = typer.confirm(
+            f"Kill '{proc.name}' (PID {proc.pid}) with SIGTERM?", default=False
+        )
+        if not confirmed:
+            console.print("Skipped.")
+            continue
+
+        optimizer = ThermalOptimizer()
+        success = optimizer.terminate_process(proc.pid, force=True)
+        if success:
+            console.print(f"[green]Sent SIGTERM to '{proc.name}' (PID {proc.pid}).[/green]")
+            del pid_map[pid]
+        else:
+            console.print(f"[red]Failed to terminate '{proc.name}' (PID {proc.pid}).[/red]")
+
+
+def _run_optimize_flow(
+    processes: list,
+    optimizer: ThermalOptimizer,
+    console: Console,
+    *,
+    auto_mode: bool,
+) -> None:
+    """Scan + display optimization plan, then apply selected actions."""
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.text import Text
+
+    console.print("[bold cyan]🔍 Scanning for optimization opportunities...[/bold cyan]\n")
+    targets = optimizer.scan_optimizations(processes)
+
+    if not targets:
+        console.print("[green]No optimization opportunities found.[/green]\n")
+        return
+
+    actionable = [t for t in targets if t.action != OptimizationAction.SUGGESTION_ONLY]
+    suggestions = [t for t in targets if t.action == OptimizationAction.SUGGESTION_ONLY]
+
+    # -- Render plan ---------------------------------------------------------
+    plan_lines = Text()
+
+    if actionable:
+        plan_lines.append("  Actions available:\n\n", style="bold")
+        for idx, t in enumerate(actionable, 1):
+            impact = "HIGH" if t.cpu_percent >= 30 else "MED" if t.cpu_percent >= 10 else "LOW"
+            style = "red" if impact == "HIGH" else "yellow" if impact == "MED" else "dim"
+
+            if t.action == OptimizationAction.CLOSE_TAB and t.browser_tabs:
+                plan_lines.append(f"  [{idx}] {t.display_name}\n", style=style)
+                plan_lines.append(
+                    f"      {t.cpu_percent:.1f}% CPU  |  {t.reason}\n", style="dim"
+                )
+                plan_lines.append("      Open tabs:\n", style="dim")
+                for tab in t.browser_tabs:
+                    active_mark = " ← active" if tab.is_active else ""
+                    short_url = tab.url[:55] + "…" if len(tab.url) > 55 else tab.url
+                    plan_lines.append(
+                        f"        [{tab.window_index}.{tab.tab_index}] "
+                        f"{tab.title[:40]}  {short_url}{active_mark}\n",
+                        style="dim",
+                    )
+            else:
+                plan_lines.append(f"  [{idx}] {t.display_name}\n", style=style)
+                plan_lines.append(
+                    f"      {t.cpu_percent:.1f}% CPU  |  {t.reason}\n", style="dim"
+                )
+
+    if suggestions:
+        plan_lines.append("\n  Suggestions (no auto-action):\n\n", style="bold dim")
+        for s in suggestions:
+            plan_lines.append(f"  [!] {s.display_name}\n", style="yellow")
+            plan_lines.append(f"      {s.suggestion_text}\n", style="dim")
+
+    console.print(Panel(plan_lines, title="[bold]Optimization Plan[/bold]", border_style="cyan"))
+
+    # Print suggestions as standalone callouts too
+    for s in suggestions:
+        console.print(f"[yellow]  💡 {s.display_name}:[/yellow] {s.suggestion_text}")
+
+    if not actionable:
+        return
+
+    # -- Apply ---------------------------------------------------------------
+    to_apply: list = []
+
+    if auto_mode:
+        # Auto: only SAFE-classified kill targets
+        to_apply = [
+            t for t in actionable
+            if t.action != OptimizationAction.CLOSE_TAB  # browser tabs need user input
+        ]
+        console.print(
+            f"\n[cyan]Auto-optimize: applying {len(to_apply)} SAFE action(s)...[/cyan]\n"
+        )
+    else:
+        console.print()
+        raw = typer.prompt(
+            "Apply actions? Enter numbers (e.g. 1,3), 'all', or 'none'",
+            default="none",
+        )
+        sel = raw.strip().lower()
+        if sel in ("none", ""):
+            console.print("No actions applied.")
+            return
+        elif sel == "all":
+            to_apply = list(actionable)
+        else:
+            try:
+                indices = [int(i.strip()) for i in sel.split(",")]
+                to_apply = [actionable[i - 1] for i in indices if 1 <= i <= len(actionable)]
+            except (ValueError, IndexError):
+                console.print("[red]Invalid selection.[/red]")
+                return
+
+    for t in to_apply:
+        if t.action == OptimizationAction.CLOSE_TAB:
+            _apply_browser_tab_close(t, optimizer, console)
+        elif t.action == OptimizationAction.QUIT_APP and t.app_name:
+            console.print(f"  Quitting '{t.app_name}'...", end="")
+            ok = optimizer.quit_app_gracefully(t.app_name)
+            console.print(" [green]Done[/green]" if ok else " [red]Failed[/red]")
+        elif t.pid is not None:
+            console.print(f"  Terminating '{t.display_name}' (PID {t.pid})...", end="")
+            ok = optimizer.terminate_process(t.pid, force=True)
+            console.print(" [green]Done[/green]" if ok else " [red]Failed[/red]")
+
+    console.print("\n[green]Optimization complete.[/green]")
+
+
+def _apply_browser_tab_close(target: "OptimizationTarget", optimizer: ThermalOptimizer, console: Console) -> None:  # type: ignore[name-defined]
+    from doctor.services.thermal_optimizer import OptimizationTarget  # noqa: F401
+    from doctor.services.browser_tab_service import BrowserTabService
+
+    if not target.browser_tabs:
+        console.print(f"[yellow]No open tabs found for {target.display_name}.[/yellow]")
+        return
+
+    console.print(f"\n[bold]Close tabs in {target.display_name}?[/bold]")
+    for tab in target.browser_tabs:
+        active_mark = " [cyan](active)[/cyan]" if tab.is_active else ""
+        short_url = tab.url[:60] + "…" if len(tab.url) > 60 else tab.url
+        console.print(
+            f"  [{tab.window_index}.{tab.tab_index}] {tab.title[:45]}  "
+            f"[dim]{short_url}[/dim]{active_mark}"
+        )
+
+    raw = typer.prompt(
+        "\nEnter tab numbers to close (e.g. 1.2,1.3), 'all', or 'none'",
+        default="none",
+    )
+    sel = raw.strip().lower()
+    if sel in ("none", ""):
+        console.print("  Skipped.")
+        return
+
+    browser_svc = BrowserTabService()
+    tabs_to_close = []
+    if sel == "all":
+        tabs_to_close = [t for t in target.browser_tabs if not t.is_active]
+        if not tabs_to_close:
+            tabs_to_close = list(target.browser_tabs)
+    else:
+        tab_map = {f"{t.window_index}.{t.tab_index}": t for t in target.browser_tabs}
+        for key in sel.split(","):
+            k = key.strip()
+            if k in tab_map:
+                tabs_to_close.append(tab_map[k])
+            else:
+                console.print(f"  [yellow]'{k}' not recognised — skipped.[/yellow]")
+
+    for tab in tabs_to_close:
+        console.print(f"  Closing '{tab.title[:45]}'...", end="")
+        ok = browser_svc.close_tab(tab)
+        console.print(" [green]Done[/green]" if ok else " [red]Failed[/red]")
 
 
 if __name__ == "__main__":
