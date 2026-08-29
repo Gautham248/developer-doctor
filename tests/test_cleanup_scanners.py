@@ -71,17 +71,21 @@ def test_python_scanner_scan(tmp_path: Path):
     cleanup_service = MagicMock()
     cleanup_service.measure_path.return_value = 50
 
+    home = tmp_path / "home"
+    home.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
     # Create fake pycache directories to verify walk
-    pycache = tmp_path / "src" / "__pycache__"
+    pycache = workspace / "src" / "__pycache__"
     pycache.mkdir(parents=True)
     (pycache / "foo.pyc").write_text("compiled")
 
-    with patch("pathlib.Path.home", return_value=tmp_path), \
-         patch("pathlib.Path.cwd", return_value=tmp_path):
+    with patch("pathlib.Path.home", return_value=home), \
+         patch("pathlib.Path.cwd", return_value=workspace):
         res = scanner.scan(cleanup_service)
 
     assert res.name == "python"
-    # It should have found local __pycache__ plus home pip/uv caches (mocked home directory)
     assert res.size_bytes > 0
 
 
@@ -90,17 +94,40 @@ def test_node_scanner_scan_local_node_modules(tmp_path: Path):
     cleanup_service = MagicMock()
     cleanup_service.measure_path.return_value = 1000
 
-    node_modules = tmp_path / "node_modules"
+    home = tmp_path / "home"
+    home.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    node_modules = workspace / "node_modules"
     node_modules.mkdir()
 
-    with patch("pathlib.Path.home", return_value=tmp_path), \
-         patch("pathlib.Path.cwd", return_value=tmp_path):
+    with patch("pathlib.Path.home", return_value=home), \
+         patch("pathlib.Path.cwd", return_value=workspace):
         res = scanner.scan(cleanup_service)
 
     assert res.name == "node"
     # Local node_modules was found, so it should NOT be safe to auto clean
     assert res.is_safe_to_auto_clean is False
     assert res.size_bytes >= 1000
+
+
+def test_node_scanner_skips_workspace_scan_when_run_from_home(tmp_path: Path):
+    scanner = NodeScanner()
+    cleanup_service = MagicMock()
+    cleanup_service.measure_path.return_value = 1000
+
+    # User has some node_modules inside home/Library or home/.local
+    fake_global_modules = tmp_path / ".local" / "share" / "mise" / "node_modules"
+    fake_global_modules.mkdir(parents=True)
+
+    with patch("pathlib.Path.home", return_value=tmp_path), \
+         patch("pathlib.Path.cwd", return_value=tmp_path):
+        res = scanner.scan(cleanup_service)
+
+    # It should not have scanned or picked up the global node_modules from home
+    assert not any("node_modules" in p for p in res.paths)
+    assert res.is_safe_to_auto_clean is True
 
 
 def test_macos_scanner_scan():
@@ -122,12 +149,58 @@ def test_build_scanner_scan(tmp_path: Path):
     cleanup_service = MagicMock()
     cleanup_service.measure_path.return_value = 250
 
-    target = tmp_path / "target"
+    home = tmp_path / "home"
+    home.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    target = workspace / "target"
     target.mkdir()
+
+    with patch("pathlib.Path.home", return_value=home), \
+         patch("pathlib.Path.cwd", return_value=workspace):
+        res = scanner.scan(cleanup_service)
+
+    assert res.name == "build"
+    assert res.size_bytes >= 250
+
+
+def test_build_scanner_ignores_node_modules_dist(tmp_path: Path):
+    scanner = BuildScanner()
+    cleanup_service = MagicMock()
+    cleanup_service.measure_path.return_value = 250
+
+    home = tmp_path / "home"
+    home.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    # Package inside node_modules has a dist directory
+    pkg_dist = workspace / "node_modules" / "some-package" / "dist"
+    pkg_dist.mkdir(parents=True)
+
+    # Also a real workspace dist directory
+    real_dist = workspace / "dist"
+    real_dist.mkdir()
+
+    with patch("pathlib.Path.home", return_value=home), \
+         patch("pathlib.Path.cwd", return_value=workspace):
+        res = scanner.scan(cleanup_service)
+
+    assert res.name == "build"
+    # Should only contain real_dist, never node_modules/some-package/dist
+    assert str(real_dist) in res.paths
+    assert not any("node_modules" in p for p in res.paths)
+
+
+def test_build_scanner_skips_workspace_scan_when_run_from_home(tmp_path: Path):
+    scanner = BuildScanner()
+    cleanup_service = MagicMock()
 
     with patch("pathlib.Path.home", return_value=tmp_path), \
          patch("pathlib.Path.cwd", return_value=tmp_path):
         res = scanner.scan(cleanup_service)
 
-    assert res.name == "build"
-    assert res.size_bytes >= 250
+    # When run from home, no local workspace paths should be collected
+    workspace_collected = [p for p in res.paths if not p.startswith(str(tmp_path / ".m2")) and not p.startswith(str(tmp_path / ".cargo")) and not p.startswith(str(tmp_path / ".gradle"))]
+    assert len(workspace_collected) == 0

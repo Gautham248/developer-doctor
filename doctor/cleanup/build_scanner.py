@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from doctor.cleanup.base import BaseScanner
+from doctor.cleanup.base import BaseScanner, is_safe_workspace_dir, SYSTEM_IGNORED_DIRS
 from doctor.models import CleanupCategory
 from doctor.services.cleanup_service import CleanupService
 from doctor.services.clean_service import CleanService
@@ -32,20 +32,24 @@ class BuildScanner(BaseScanner):
 
         # 2. Local workspace build directories
         cwd = Path.cwd()
-        try:
-            for root, dirs, files in os.walk(cwd, followlinks=False):
-                # Don't search inside .git or .venv
-                dirs[:] = [d for d in dirs if d not in (".git", ".venv", "venv")]
-                for d in list(dirs):
-                    if d in ("build", "dist", "target", ".gradle", "out"):
-                        p = Path(root) / d
-                        sz = cleanup_service.measure_path(p)
-                        if sz > 0:
-                            paths_to_check.append(str(p))
-                            size_bytes += sz
-                        dirs.remove(d)
-        except OSError:
-            pass
+        if is_safe_workspace_dir(cwd):
+            try:
+                for root, dirs, files in os.walk(cwd, followlinks=False):
+                    # Prune system, package (like node_modules), and hidden directories
+                    dirs[:] = [
+                        d for d in dirs
+                        if d not in SYSTEM_IGNORED_DIRS and not d.startswith(".")
+                    ]
+                    for d in list(dirs):
+                        if d in ("build", "dist", "target", ".gradle", "out"):
+                            p = Path(root) / d
+                            sz = cleanup_service.measure_path(p)
+                            if sz > 0:
+                                paths_to_check.append(str(p))
+                                size_bytes += sz
+                            dirs.remove(d)
+            except OSError:
+                pass
 
         return CleanupCategory(
             name=self.name,

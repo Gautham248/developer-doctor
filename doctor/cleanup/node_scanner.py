@@ -2,7 +2,7 @@ import sys
 import os
 from pathlib import Path
 
-from doctor.cleanup.base import BaseScanner
+from doctor.cleanup.base import BaseScanner, is_safe_workspace_dir, IGNORED_FOR_NODE_SCAN
 from doctor.models import CleanupCategory
 from doctor.services.cleanup_service import CleanupService
 from doctor.services.clean_service import CleanService
@@ -38,23 +38,27 @@ class NodeScanner(BaseScanner):
                     paths_to_check.append(str(cache_path))
                     size_bytes += sz
 
-        # 2. Local node_modules in workspace
+        # 2. Local node_modules in workspace (only if inside a project workspace, not ~ or /)
         cwd = Path.cwd()
-        try:
-            for root, dirs, files in os.walk(cwd, followlinks=False):
-                # Don't recurse into .git, .venv, etc.
-                dirs[:] = [d for d in dirs if d not in (".git", ".venv", "venv")]
-                if "node_modules" in dirs:
-                    p = Path(root) / "node_modules"
-                    sz = cleanup_service.measure_path(p)
-                    if sz > 0:
-                        paths_to_check.append(str(p))
-                        size_bytes += sz
-                        has_local_node_modules = True
-                    # Don't recurse into node_modules itself
-                    dirs.remove("node_modules")
-        except OSError:
-            pass
+        if is_safe_workspace_dir(cwd):
+            try:
+                for root, dirs, files in os.walk(cwd, followlinks=False):
+                    # Don't recurse into tool installations, system dirs, or hidden dot-dirs
+                    dirs[:] = [
+                        d for d in dirs
+                        if d not in IGNORED_FOR_NODE_SCAN and (not d.startswith(".") or d == "node_modules")
+                    ]
+                    if "node_modules" in dirs:
+                        p = Path(root) / "node_modules"
+                        sz = cleanup_service.measure_path(p)
+                        if sz > 0:
+                            paths_to_check.append(str(p))
+                            size_bytes += sz
+                            has_local_node_modules = True
+                        # Don't recurse into node_modules itself
+                        dirs.remove("node_modules")
+            except OSError:
+                pass
 
         # If local node_modules were found, this category is NOT safe to auto-clean
         # and requires explicit user review / confirmation.

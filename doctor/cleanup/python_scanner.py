@@ -2,10 +2,12 @@ import sys
 import os
 from pathlib import Path
 
-from doctor.cleanup.base import BaseScanner
+from doctor.cleanup.base import BaseScanner, is_safe_workspace_dir, SYSTEM_IGNORED_DIRS
 from doctor.models import CleanupCategory
 from doctor.services.cleanup_service import CleanupService
 from doctor.services.clean_service import CleanService
+
+PYTHON_CACHE_NAMES = frozenset({"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"})
 
 
 class PythonScanner(BaseScanner):
@@ -33,25 +35,25 @@ class PythonScanner(BaseScanner):
                     paths_to_check.append(str(cache_path))
                     size_bytes += sz
 
-        # 2. Local workspace python artifacts
+        # 2. Local workspace python artifacts (only if inside a project workspace, not ~ or /)
         cwd = Path.cwd()
-        # To avoid scanning huge directories or other projects, we only scan up to 3 levels deep
-        # or recursively but ignoring node_modules, .git, etc.
-        try:
-            for root, dirs, files in os.walk(cwd, followlinks=False):
-                # Modify dirs in-place to prune search
-                dirs[:] = [d for d in dirs if d not in (".git", "node_modules", ".venv", "venv", "env")]
-                for d in list(dirs):
-                    if d in ("__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"):
-                        p = Path(root) / d
-                        sz = cleanup_service.measure_path(p)
-                        if sz > 0:
-                            paths_to_check.append(str(p))
-                            size_bytes += sz
-                        # Don't recurse into these since we are deleting them
-                        dirs.remove(d)
-        except OSError:
-            pass
+        if is_safe_workspace_dir(cwd):
+            try:
+                for root, dirs, files in os.walk(cwd, followlinks=False):
+                    dirs[:] = [
+                        d for d in dirs
+                        if d in PYTHON_CACHE_NAMES or (d not in SYSTEM_IGNORED_DIRS and not d.startswith("."))
+                    ]
+                    for d in list(dirs):
+                        if d in PYTHON_CACHE_NAMES:
+                            p = Path(root) / d
+                            sz = cleanup_service.measure_path(p)
+                            if sz > 0:
+                                paths_to_check.append(str(p))
+                                size_bytes += sz
+                            dirs.remove(d)
+            except OSError:
+                pass
 
         return CleanupCategory(
             name=self.name,
