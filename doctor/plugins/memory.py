@@ -118,6 +118,22 @@ class MemoryPlugin(DoctorPlugin):
                             f"user-owned process above instead."
                         )
 
+                    rest = top_processes[1:]
+                    if rest:
+                        commands = ", ".join(
+                            f"'{p.name}' — `kill {p.pid}`"
+                            for p in rest
+                            if p.kill_safety == "SAFE"
+                        )
+                        if commands:
+                            recommendations.append(f"Other consumers: {commands}.")
+
+                    recommendations.append(
+                        "Run `doctor memory --optimize` for a guided plan, or "
+                        "`doctor memory --kill` to close specific processes "
+                        "interactively."
+                    )
+
             return PluginResult(
                 plugin_name=self.name,
                 status=status,

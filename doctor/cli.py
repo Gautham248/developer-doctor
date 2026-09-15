@@ -1,5 +1,7 @@
 from pathlib import Path
+from typing import Any
 
+import psutil
 import typer
 from rich.console import Console
 
@@ -31,6 +33,8 @@ from doctor.services.thermal_optimizer import (
     OptimizationAction,
     OptimizationCategory,
 )
+from doctor.services.process_service import ProcessService
+from doctor.services.memory_optimizer import MemoryOptimizer
 
 app = typer.Typer(help="Developer Doctor — diagnose your dev workstation")
 baseline_app = typer.Typer(help="Capture and compare baseline system snapshots (§16).")
@@ -543,7 +547,7 @@ def thermal_cmd(
                 processes, optimizer, console, auto_mode=auto_optimize
             )
         elif kill:
-            _run_kill_flow(processes, service, console)
+            _run_kill_flow(processes, console)
 
     if watch:
         try:
@@ -662,8 +666,10 @@ def _render_process_table(processes: list, console: Console) -> None:
     )
 
 
-def _run_kill_flow(processes: list, service: ThermalService, console: Console) -> None:
-    """Interactive per-process kill loop."""
+def _run_kill_flow(processes: list, console: Console) -> None:
+    """Interactive per-process kill loop. Generic over anything exposing
+    .pid/.name/.kill_safety/.kill_reason — used by both `doctor thermal
+    --kill` (CPU-ranked) and `doctor memory --kill` (RSS-ranked)."""
     candidates = [p for p in processes if p.kill_safety != KillSafety.UNSAFE]
     if not candidates:
         console.print("[yellow]No killable processes in the current list.[/yellow]")
@@ -866,6 +872,191 @@ def _apply_browser_tab_close(target: "OptimizationTarget", optimizer: ThermalOpt
         console.print(f"  Closing '{tab.title[:45]}'...", end="")
         ok = browser_svc.close_tab(tab)
         console.print(" [green]Done[/green]" if ok else " [red]Failed[/red]")
+
+
+# ---------------------------------------------------------------------------
+# `doctor memory` command
+# ---------------------------------------------------------------------------
+
+@app.command("memory")
+def memory_cmd(
+    top: int = typer.Option(10, "--top", help="Number of top RAM-consuming processes to display."),
+    threshold: float = typer.Option(0.1, "--threshold", help="Min RSS in GB to include a process."),
+    kill: bool = typer.Option(False, "--kill", help="Interactive per-process kill mode."),
+    optimize: bool = typer.Option(False, "--optimize", help="Scan and propose a plan to free RAM."),
+    auto_optimize: bool = typer.Option(False, "--auto-optimize", help="Silently apply all SAFE optimizations."),
+) -> None:
+    """Show RAM/swap usage and the top RAM-consuming processes.
+
+    Use --optimize to get an actionable plan to free RAM.
+    Use --kill to manually terminate specific processes.
+    """
+    process_service = ProcessService()
+    optimizer = MemoryOptimizer()
+
+    vm = psutil.virtual_memory()
+    swap = psutil.swap_memory()
+    processes = process_service.sample_memory_processes(limit=top, min_rss_gb=threshold)
+
+    _render_memory_header(vm, swap, console)
+    _render_memory_process_table(processes, console)
+
+    if optimize or auto_optimize:
+        _run_memory_optimize_flow(processes, optimizer, console, auto_mode=auto_optimize)
+    elif kill:
+        _run_kill_flow(processes, console)
+
+
+# ---------------------------------------------------------------------------
+# Memory rendering helpers
+# ---------------------------------------------------------------------------
+
+def _render_memory_header(vm: Any, swap: Any, console: Console) -> None:
+    from rich.panel import Panel
+    from rich.text import Text
+
+    used_gb = vm.used / (1024**3)
+    total_gb = vm.total / (1024**3)
+    swap_gb = swap.used / (1024**3)
+
+    style = "green" if vm.percent < 80 else "yellow" if vm.percent < 95 else "red"
+
+    lines = Text()
+    lines.append("RAM:   ", style="bold")
+    lines.append(f"{used_gb:.1f} GB / {total_gb:.1f} GB  ({vm.percent:.0f}%)\n", style=style)
+    lines.append("Swap:  ", style="bold")
+    swap_style = "green" if swap_gb < 2 else "yellow" if swap_gb < 8 else "red"
+    lines.append(f"{swap_gb:.1f} GB used\n", style=swap_style)
+
+    console.print(Panel(lines, title="[bold]Memory Status[/bold]", border_style=style))
+    console.print()
+
+
+def _render_memory_process_table(processes: list, console: Console) -> None:
+    from rich.table import Table
+
+    if not processes:
+        console.print("[dim]No processes above threshold.[/dim]")
+        return
+
+    table = Table(
+        title="Top RAM-Consuming Processes",
+        show_header=True,
+        header_style="bold cyan",
+        border_style="dim",
+    )
+    table.add_column("#", style="dim", width=3)
+    table.add_column("PID", width=7)
+    table.add_column("Process", width=26)
+    table.add_column("RAM", justify="right", width=9)
+    table.add_column("User", width=12)
+    table.add_column("Safe to Kill?", width=16)
+
+    for idx, proc in enumerate(processes, 1):
+        safety_display, _ = _SAFETY_DISPLAY[proc.kill_safety]
+        table.add_row(
+            str(idx),
+            str(proc.pid),
+            proc.name,
+            f"{proc.rss_gb:.1f} GB",
+            proc.username or "?",
+            safety_display,
+        )
+
+    console.print(table)
+    console.print(
+        "[dim]  Run with --kill to terminate processes, "
+        "--optimize to auto-reduce RAM usage.[/dim]\n"
+    )
+
+
+def _run_memory_optimize_flow(
+    processes: list,
+    optimizer: MemoryOptimizer,
+    console: Console,
+    *,
+    auto_mode: bool,
+) -> None:
+    """Scan + display a RAM-reduction plan, then apply selected actions.
+
+    Mirrors _run_optimize_flow's shape (thermal/CPU) but simpler — memory
+    targets have no browser-tab-level granularity (§ deferred: closing
+    individual RAM-heavy tabs rather than the whole renderer process)."""
+    from rich.panel import Panel
+    from rich.text import Text
+
+    console.print("[bold cyan]🔍 Scanning for RAM to free...[/bold cyan]\n")
+    targets = optimizer.scan(processes)
+
+    if not targets:
+        console.print("[green]No optimization opportunities found.[/green]\n")
+        return
+
+    actionable = [t for t in targets if t.action != OptimizationAction.SUGGESTION_ONLY]
+    suggestions = [t for t in targets if t.action == OptimizationAction.SUGGESTION_ONLY]
+
+    plan_lines = Text()
+
+    if actionable:
+        plan_lines.append("  Actions available:\n\n", style="bold")
+        for idx, t in enumerate(actionable, 1):
+            impact = "HIGH" if t.rss_gb >= 2 else "MED" if t.rss_gb >= 0.5 else "LOW"
+            style = "red" if impact == "HIGH" else "yellow" if impact == "MED" else "dim"
+            plan_lines.append(f"  [{idx}] {t.display_name}\n", style=style)
+            plan_lines.append(f"      {t.rss_gb:.1f} GB RAM  |  {t.reason}\n", style="dim")
+
+    if suggestions:
+        plan_lines.append("\n  Suggestions (no auto-action):\n\n", style="bold dim")
+        for s in suggestions:
+            plan_lines.append(f"  [!] {s.display_name}\n", style="yellow")
+            plan_lines.append(f"      {s.suggestion_text}\n", style="dim")
+
+    console.print(Panel(plan_lines, title="[bold]Optimization Plan[/bold]", border_style="cyan"))
+
+    for s in suggestions:
+        console.print(f"[yellow]  💡 {s.display_name}:[/yellow] {s.suggestion_text}")
+
+    if not actionable:
+        return
+
+    to_apply: list = []
+
+    if auto_mode:
+        to_apply = list(actionable)
+        console.print(
+            f"\n[cyan]Auto-optimize: applying {len(to_apply)} SAFE action(s)...[/cyan]\n"
+        )
+    else:
+        console.print()
+        raw = typer.prompt(
+            "Apply actions? Enter numbers (e.g. 1,3), 'all', or 'none'",
+            default="none",
+        )
+        sel = raw.strip().lower()
+        if sel in ("none", ""):
+            console.print("No actions applied.")
+            return
+        elif sel == "all":
+            to_apply = list(actionable)
+        else:
+            try:
+                indices = [int(i.strip()) for i in sel.split(",")]
+                to_apply = [actionable[i - 1] for i in indices if 1 <= i <= len(actionable)]
+            except (ValueError, IndexError):
+                console.print("[red]Invalid selection.[/red]")
+                return
+
+    for t in to_apply:
+        if t.action == OptimizationAction.QUIT_APP and t.app_name:
+            console.print(f"  Quitting '{t.app_name}'...", end="")
+            ok = optimizer.quit_app_gracefully(t.app_name)
+            console.print(" [green]Done[/green]" if ok else " [red]Failed[/red]")
+        else:
+            console.print(f"  Terminating '{t.display_name}' (PID {t.pid})...", end="")
+            ok = optimizer.terminate_process(t.pid, force=True)
+            console.print(" [green]Done[/green]" if ok else " [red]Failed[/red]")
+
+    console.print("\n[green]Optimization complete.[/green]")
 
 
 if __name__ == "__main__":
