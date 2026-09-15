@@ -1,12 +1,30 @@
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import psutil
 
 from doctor.capabilities import Capability
 from doctor.services.base import BaseService
+from doctor.services.thermal_service import KillSafety, ThermalService
 
 DEFAULT_SAMPLE_INTERVAL_SECONDS = 0.5
+
+
+@dataclass
+class MemoryProcess:
+    """A process ranked by RAM (RSS) usage, with the same kill-safety
+    rating ThermalService already computes for CPU-ranked processes —
+    reused here rather than re-implemented (§12: shared, testable
+    services; avoid duplicating the same classification twice)."""
+
+    pid: int
+    name: str
+    rss_gb: float
+    username: str
+    ppid: int
+    kill_safety: KillSafety
+    kill_reason: str
 
 
 class ProcessService(BaseService):
@@ -51,6 +69,56 @@ class ProcessService(BaseService):
 
         results.sort(key=lambda p: p[1], reverse=True)
         return results[:limit], cpu_percent, load_avg
+
+    def sample_memory_processes(
+        self,
+        limit: int = 5,
+        min_rss_gb: float = 0.1,
+    ) -> list[MemoryProcess]:
+        """Return the top RAM-consuming processes with kill safety ratings.
+
+        Unlike CPU%, RSS is a point-in-time value psutil can read on the
+        first call — no prime/sleep window needed, so this is cheap enough
+        to call only when a memory finding is already WARN/FAIL (see
+        MemoryPlugin), keeping the common PASS-path fast (§2.1: under 3s).
+        """
+        current_user = ThermalService._current_username()
+        results: list[MemoryProcess] = []
+
+        for proc in psutil.process_iter(["pid", "name", "username", "ppid"]):
+            try:
+                rss_gb = proc.memory_info().rss / (1024**3)
+                if rss_gb < min_rss_gb:
+                    continue
+
+                info = proc.as_dict(attrs=["pid", "name", "username", "ppid"])
+                name = info.get("name") or ""
+                username = info.get("username") or ""
+                pid = info.get("pid", 0)
+                ppid = info.get("ppid", 0)
+
+                safety, reason = ThermalService._classify_kill_safety(
+                    pid=pid,
+                    name=name,
+                    username=username,
+                    current_user=current_user,
+                )
+                results.append(
+                    MemoryProcess(
+                        pid=pid,
+                        name=name,
+                        rss_gb=rss_gb,
+                        username=username,
+                        ppid=ppid,
+                        kill_safety=safety,
+                        kill_reason=reason,
+                    )
+                )
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+        results.sort(key=lambda p: p.rss_gb, reverse=True)
+        return results[:limit]
 
     def sample_grouped(
         self,

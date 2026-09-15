@@ -53,13 +53,14 @@ class CPUPlugin(DoctorPlugin):
                         score_delta = max(score_delta, WARN_SCORE_DELTA)
                     recommendations.append(
                         f"'{proc_name}' has been using {proc_cpu:.0f}% CPU. "
-                        f"If this persists, consider restarting it."
+                        f"Run `doctor thermal --optimize` to review it and close "
+                        f"it safely if it's not doing legitimate work."
                     )
 
             if status != Status.PASS and not recommendations:
                 recommendations.append(
-                    "Overall CPU usage is high. Check the top processes above "
-                    "to identify what's consuming resources."
+                    "Overall CPU usage is high. Run `doctor thermal --optimize` "
+                    "to scan running processes and get a safe plan to reduce it."
                 )
 
             return PluginResult(

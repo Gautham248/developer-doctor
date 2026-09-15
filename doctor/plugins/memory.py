@@ -3,6 +3,10 @@ import psutil
 from doctor.models import Finding, PluginResult, Status
 from doctor.plugins.base import DoctorPlugin
 from doctor.capabilities import Capability
+from doctor.services.process_service import MemoryProcess, ProcessService
+
+# Number of top RAM consumers to surface once a finding is WARN/FAIL.
+TOP_PROCESS_LIMIT = 3
 
 # Defaults — overridable per-project via doctor.toml:
 # [thresholds.memory]
@@ -24,9 +28,20 @@ FAIL_SCORE_DELTA = 15
 class MemoryPlugin(DoctorPlugin):
     name = "memory"
     description = "Reports RAM and swap usage, flags memory pressure."
-    capabilities : list[Capability] = []
+    capabilities: list[Capability] = [Capability.PROCESS_INSPECTION]
+
     def __init__(self, thresholds: dict[str, float] | None = None) -> None:
         self.thresholds = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
+
+    def _top_processes(self) -> list[MemoryProcess]:
+        """Best-effort per-process RAM breakdown. Sampling failures are
+        swallowed so they never turn an otherwise-valid RAM/swap reading
+        into a FAIL result — this is enrichment, not the core check."""
+        try:
+            process_service = self.use_service(ProcessService)
+            return process_service.sample_memory_processes(limit=TOP_PROCESS_LIMIT)
+        except Exception:
+            return []
 
     def run(self) -> PluginResult:
         try:
@@ -77,6 +92,31 @@ class MemoryPlugin(DoctorPlugin):
                         f"Some swap is in use ({swap_used_gb} GB), which can slow things "
                         f"down. Keep an eye on memory usage if things feel sluggish."
                     )
+
+            if status in (Status.WARN, Status.FAIL):
+                top_processes = self._top_processes()
+                for proc in top_processes:
+                    findings.append(
+                        Finding(summary=f"{proc.name}: {proc.rss_gb:.1f} GB RSS")
+                    )
+
+                if top_processes:
+                    biggest = top_processes[0]
+                    if biggest.kill_safety == "SAFE":
+                        recommendations.append(
+                            f"'{biggest.name}' is your largest RAM consumer at "
+                            f"{biggest.rss_gb:.1f} GB (PID {biggest.pid}). Quit or "
+                            f"restart it to relieve pressure most directly — "
+                            f"e.g. `kill {biggest.pid}` or close it normally."
+                        )
+                    else:
+                        recommendations.append(
+                            f"'{biggest.name}' ({biggest.rss_gb:.1f} GB, PID "
+                            f"{biggest.pid}) is your largest RAM consumer, but it's "
+                            f"{biggest.kill_safety.value.lower()} to close — "
+                            f"{biggest.kill_reason}. Check the next-largest "
+                            f"user-owned process above instead."
+                        )
 
             return PluginResult(
                 plugin_name=self.name,
